@@ -5,12 +5,10 @@ import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { Capacitor } from '@capacitor/core';
 
-// Helper to detect if running on native platform
 const isNativePlatform = (): boolean => {
   return Capacitor.isNativePlatform();
 };
 
-// Helper to save file and share on mobile
 const saveAndShareFile = async (
   fileName: string,
   data: string,
@@ -18,15 +16,12 @@ const saveAndShareFile = async (
 ): Promise<void> => {
   if (isNativePlatform()) {
     try {
-      // Save to app's documents directory
       const result = await Filesystem.writeFile({
         path: fileName,
         data: data,
         directory: Directory.Documents,
         recursive: true,
       });
-
-      // Share the file
       await Share.share({
         title: fileName,
         url: result.uri,
@@ -37,7 +32,6 @@ const saveAndShareFile = async (
       throw new Error(`Failed to save file: ${error}`);
     }
   } else {
-    // Fallback for web browser
     const byteCharacters = atob(data);
     const byteNumbers = new Array(byteCharacters.length);
     for (let i = 0; i < byteCharacters.length; i++) {
@@ -54,7 +48,6 @@ const saveAndShareFile = async (
   }
 };
 
-// Helper to save text file and share on mobile
 const saveAndShareTextFile = async (
   fileName: string,
   content: string,
@@ -62,7 +55,6 @@ const saveAndShareTextFile = async (
 ): Promise<void> => {
   if (isNativePlatform()) {
     try {
-      // Save to app's documents directory
       const result = await Filesystem.writeFile({
         path: fileName,
         data: content,
@@ -70,8 +62,6 @@ const saveAndShareTextFile = async (
         encoding: 'utf8' as any,
         recursive: true,
       });
-
-      // Share the file
       await Share.share({
         title: fileName,
         url: result.uri,
@@ -82,7 +72,6 @@ const saveAndShareTextFile = async (
       throw new Error(`Failed to save file: ${error}`);
     }
   } else {
-    // Fallback for web browser
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -91,6 +80,18 @@ const saveAndShareTextFile = async (
     link.click();
     URL.revokeObjectURL(url);
   }
+};
+
+const formatCoordinateDMS = (value: number, isLatitude: boolean): string => {
+  const absolute = Math.abs(value);
+  const degrees = Math.floor(absolute);
+  const minutesDecimal = (absolute - degrees) * 60;
+  const minutes = Math.floor(minutesDecimal);
+  const seconds = ((minutesDecimal - minutes) * 60).toFixed(1);
+  const direction = isLatitude 
+    ? (value >= 0 ? 'N' : 'S')
+    : (value >= 0 ? 'E' : 'W');
+  return `${degrees}° ${minutes}' ${seconds}" ${direction}`;
 };
 
 export const calculateFractureStats = (
@@ -166,6 +167,8 @@ export const exportToPDF = async (
   pdf.text(`Analysis Date: ${new Date(projectData.timestamp).toLocaleString()}`, margin, margin + 18);
 
   let yPos = margin + 30;
+
+  // Face Orientation
   pdf.setFontSize(14);
   pdf.setFont('helvetica', 'bold');
   pdf.text('Face Orientation', margin, yPos);
@@ -177,14 +180,32 @@ export const exportToPDF = async (
   yPos += 6;
   pdf.text(`Dip: ${projectData.faceOrientation.dip}°`, margin + 5, yPos);
 
+  // GPS Location
+  if (projectData.gpsCoordinates) {
+    yPos += 12;
+    pdf.setFontSize(14);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('GPS Location', margin, yPos);
+
+    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'normal');
+    yPos += 7;
+    pdf.text(`Latitude: ${formatCoordinateDMS(projectData.gpsCoordinates.latitude, true)}`, margin + 5, yPos);
+    yPos += 6;
+    pdf.text(`Longitude: ${formatCoordinateDMS(projectData.gpsCoordinates.longitude, false)}`, margin + 5, yPos);
+    if (projectData.gpsCoordinates.altitude !== null) {
+      yPos += 6;
+      pdf.text(`Elevation: ${projectData.gpsCoordinates.altitude.toFixed(1)} m`, margin + 5, yPos);
+    }
+  }
+
+  // Fracture Statistics
   yPos += 12;
   pdf.setFontSize(14);
   pdf.setFont('helvetica', 'bold');
   pdf.text('Fracture Statistics Summary', margin, yPos);
 
   yPos += 7;
-  pdf.setFontSize(11);
-  pdf.setFont('helvetica', 'normal');
 
   const summaryData = [
     ['Total Joints', stats.totalJoints.toString()],
@@ -206,6 +227,7 @@ export const exportToPDF = async (
     margin: { left: margin, right: margin },
   });
 
+  // Page 2 - Image
   pdf.addPage();
 
   pdf.setFontSize(14);
@@ -225,6 +247,7 @@ export const exportToPDF = async (
     }
   }
 
+  // Page 3 - Joint Data
   pdf.addPage();
 
   pdf.setFontSize(14);
@@ -250,7 +273,6 @@ export const exportToPDF = async (
     styles: { fontSize: 8 },
   });
 
-  // Get PDF as base64 and save/share
   const fileName = `joint-analysis-${new Date().toISOString().split('T')[0]}.pdf`;
   const pdfBase64 = pdf.output('datauristring').split(',')[1];
   
@@ -268,6 +290,16 @@ export const exportToCSV = async (projectData: ProjectData, stats: FractureStats
   rows.push(`Azimuth,${projectData.faceOrientation.azimuth}`);
   rows.push(`Dip,${projectData.faceOrientation.dip}`);
   rows.push('');
+
+  if (projectData.gpsCoordinates) {
+    rows.push('GPS Location');
+    rows.push(`Latitude,${projectData.gpsCoordinates.latitude}`);
+    rows.push(`Longitude,${projectData.gpsCoordinates.longitude}`);
+    if (projectData.gpsCoordinates.altitude !== null) {
+      rows.push(`Elevation (m),${projectData.gpsCoordinates.altitude.toFixed(1)}`);
+    }
+    rows.push('');
+  }
 
   rows.push('Summary Statistics');
   rows.push(`Total Joints,${stats.totalJoints}`);
@@ -303,8 +335,6 @@ export const exportToImage = async (canvas: HTMLCanvasElement | null): Promise<v
   }
 
   const fileName = `joint-analysis-${new Date().toISOString().split('T')[0]}.png`;
-  
-  // Get image as base64 (remove the data:image/png;base64, prefix)
   const imageData = canvas.toDataURL('image/png').split(',')[1];
   
   await saveAndShareFile(fileName, imageData, 'image/png');
