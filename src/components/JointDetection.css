@@ -1,0 +1,269 @@
+.joint-detection {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.detection-layout {
+  display: grid;
+  grid-template-columns: 350px 1fr;
+  gap: 20px;
+  margin: 20px 0;
+}
+
+@media (max-width: 1024px) {
+  .detection-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.parameters-panel {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  height: fit-content;
+  position: sticky;
+  top: 20px;
+}
+
+.parameters-panel h3 {
+  margin-top: 0;
+  color: #2c3e50;
+  border-bottom: 2px solid #3498db;
+  padding-bottom: 10px;
+}
+
+.parameter-group {
+  margin: 20px 0;
+}
+
+.parameter-group label {
+  display: block;
+  font-weight: bold;
+  color: #34495e;
+  margin-bottom: 8px;
+}
+
+.parameter-group input[type="range"] {
+  width: 100%;
+  margin: 10px 0;
+  height: 8px;
+  -webkit-appearance: none;
+  background: #ecf0f1;
+  border-radius: 4px;
+  outline: none;
+}
+
+.parameter-group input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  background: #3498db;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.parameter-group small {
+  display: block;
+  color: #7f8c8d;
+  font-size: 13px;
+  margin-top: 5px;
+}
+
+.btn-detect {
+  width: 100%;
+  margin: 20px 0;
+  padding: 15px;
+  font-size: 16px;
+}
+
+.preset-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 20px 0;
+}
+
+.preset-buttons .btn-preset {
+  padding: 12px;
+  font-size: 14px;
+  background: white;
+  border: 2px solid #3498db;
+  color: #3498db;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.preset-buttons .btn-preset:hover {
+  background: #3498db;
+  color: white;
+}
+
+.detection-stats {
+  margin-top: 20px;
+  padding: 15px;
+  background: #e8f5e9;
+  border-radius: 8px;
+  border-left: 4px solid #4caf50;
+}
+
+.detection-stats h4 {
+  margin-top: 0;
+  color: #2e7d32;
+}
+
+.detection-stats p {
+  margin: 8px 0;
+  color: #1b5e20;
+}
+
+.canvas-panel {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.view-controls {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 15px;
+  padding: 12px 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  padding: 8px 12px;
+  border-radius: 6px;
+  transition: all 0.3s;
+}
+
+.checkbox-label:hover {
+  background: rgba(52, 152, 219, 0.1);
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.checkbox-label.selection-mode {
+  background: rgba(231, 76, 60, 0.1);
+  border: 2px solid transparent;
+}
+
+.checkbox-label.selection-mode.active {
+  background: rgba(231, 76, 60, 0.2);
+  border-color: #e74c3c;
+  color: #c0392b;
+}
+
+.control-divider {
+  width: 1px;
+  height: 30px;
+  background: #ddd;
+}
+
+.btn-clear-all {
+  background: #e74c3c;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.3s;
+}
+
+.btn-clear-all:hover {
+  background: #c0392b;
+}
+
+.selection-hint {
+  background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%);
+  border: 2px solid #ffc107;
+  border-radius: 8px;
+  padding: 12px 20px;
+  margin-bottom: 15px;
+  text-align: center;
+  font-weight: 500;
+  color: #856404;
+}
+
+.canvas-container {
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  overflow: auto;
+  background: #1a1a1a;
+  max-height: 700px;
+}
+
+.canvas-container canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.overlay-legend {
+  margin-top: 15px;
+  padding: 12px 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  display: flex;
+  gap: 25px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.legend-color {
+  width: 30px;
+  height: 4px;
+  display: inline-block;
+  border-radius: 2px;
+}
+
+.button-group {
+  display: flex;
+  gap: 15px;
+  margin-top: 20px;
+}
+
+.button-group button {
+  flex: 1;
+}
+
+@media (max-width: 768px) {
+  .parameters-panel {
+    position: static;
+  }
+  
+  .view-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .control-divider {
+    width: 100%;
+    height: 1px;
+  }
+}
