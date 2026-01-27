@@ -3,6 +3,13 @@ export interface Point {
   y: number;
 }
 
+export interface GPSCoordinates {
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  accuracy: number | null;
+}
+
 export interface FaceOrientation {
   azimuth: number; // 0-360 degrees
   dip: number; // 0-90 degrees (90 = vertical face)
@@ -28,6 +35,7 @@ export interface ProjectData {
   photoWidth: number;
   photoHeight: number;
   faceOrientation: FaceOrientation;
+  gpsCoordinates: GPSCoordinates | null;
   scale: ScaleData | null;
   joints: Joint[];
   timestamp: string;
