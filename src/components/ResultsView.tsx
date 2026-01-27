@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { ProjectData, FractureStats } from '../types';
 import { calculateFractureStats, exportToPDF, exportToCSV, exportToImage } from '../utils/exportUtils';
 import './ResultsView.css';
@@ -11,9 +11,9 @@ interface ResultsViewProps {
 
 const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBack }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imageLoadedRef = useRef<boolean>(false);
-  const [stats, setStats] = React.useState<FractureStats | null>(null);
-  const [isExporting, setIsExporting] = React.useState<string | null>(null);
+  const [stats, setStats] = useState<FractureStats | null>(null);
+  const [isExporting, setIsExporting] = useState<string | null>(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
 
   useEffect(() => {
     if (projectData.scale) {
@@ -28,25 +28,26 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
   }, [projectData]);
 
   useEffect(() => {
-    if (!imageLoadedRef.current) {
-      loadImage();
-    }
-  }, [projectData.photo]);
+    loadAndDrawImage();
+  }, [projectData.photo, projectData.joints]);
 
-  const loadImage = () => {
+  const loadAndDrawImage = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !projectData.photo) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const img = new Image();
     img.onload = () => {
-      imageLoadedRef.current = true;
       canvas.width = img.width;
       canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
       drawAnnotations(ctx, img.width, img.height);
+      setImageLoaded(true);
+    };
+    img.onerror = () => {
+      console.error('Failed to load image');
     };
     img.src = projectData.photo;
   };
@@ -187,15 +188,18 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
         <p className="timestamp">Analysis completed: {new Date(projectData.timestamp).toLocaleString()}</p>
       </div>
 
-      <div className="results-layout">
-        <div className="results-image">
+      <div className="results-content">
+        <div className="results-image-section">
           <h3>Annotated Image</h3>
           <div className="canvas-container">
             <canvas ref={canvasRef} />
+            {!imageLoaded && (
+              <div className="image-loading">Loading image...</div>
+            )}
           </div>
         </div>
 
-        <div className="results-stats">
+        <div className="results-stats-section">
           <h3>Fracture Statistics</h3>
 
           <div className="stats-grid">
@@ -244,49 +248,37 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
             </div>
           </div>
 
-          <div className="orientation-info">
-            <h4>Face Orientation</h4>
-            <div className="orientation-grid">
-              <div>
-                <strong>Azimuth:</strong> {projectData.faceOrientation.azimuth}°
-              </div>
-              <div>
-                <strong>Dip:</strong> {projectData.faceOrientation.dip}°
+          <div className="info-section">
+            <div className="orientation-info">
+              <h4>📐 Face Orientation</h4>
+              <div className="info-grid">
+                <div><strong>Azimuth:</strong> {projectData.faceOrientation.azimuth}°</div>
+                <div><strong>Dip:</strong> {projectData.faceOrientation.dip}°</div>
               </div>
             </div>
-          </div>
 
-          {projectData.gpsCoordinates && (
-            <div className="gps-info">
-              <h4>📍 GPS Location</h4>
-              <div className="gps-grid">
-                <div>
-                  <strong>Lat:</strong> {formatCoordinate(projectData.gpsCoordinates.latitude, true)}
+            {projectData.gpsCoordinates && (
+              <div className="gps-info">
+                <h4>📍 GPS Location</h4>
+                <div className="info-grid">
+                  <div><strong>Lat:</strong> {formatCoordinate(projectData.gpsCoordinates.latitude, true)}</div>
+                  <div><strong>Lon:</strong> {formatCoordinate(projectData.gpsCoordinates.longitude, false)}</div>
+                  {projectData.gpsCoordinates.altitude !== null && (
+                    <div><strong>Elev:</strong> {projectData.gpsCoordinates.altitude.toFixed(1)} m</div>
+                  )}
                 </div>
-                <div>
-                  <strong>Lon:</strong> {formatCoordinate(projectData.gpsCoordinates.longitude, false)}
-                </div>
-                {projectData.gpsCoordinates.altitude !== null && (
-                  <div>
-                    <strong>Elev:</strong> {projectData.gpsCoordinates.altitude.toFixed(1)} m
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="scale-info">
-            <h4>Scale Information</h4>
-            {projectData.scale && (
-              <div>
-                <p>
-                  <strong>Scale:</strong> {projectData.scale.pixelsPerMeter.toFixed(2)} pixels/meter
-                </p>
-                <p>
-                  <strong>Calibration Distance:</strong> {projectData.scale.realWorldDistance.toFixed(2)} m
-                </p>
               </div>
             )}
+
+            <div className="scale-info">
+              <h4>📏 Scale Information</h4>
+              {projectData.scale && (
+                <div className="info-grid">
+                  <div><strong>Scale:</strong> {projectData.scale.pixelsPerMeter.toFixed(2)} px/m</div>
+                  <div><strong>Calibration:</strong> {projectData.scale.realWorldDistance.toFixed(2)} m</div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -299,10 +291,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
               <tr>
                 <th>#</th>
                 <th>Length (m)</th>
-                <th>Length (pixels)</th>
                 <th>Orientation (°)</th>
-                <th>Start Point</th>
-                <th>End Point</th>
               </tr>
             </thead>
             <tbody>
@@ -310,10 +299,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
                 <tr key={joint.id}>
                   <td>{index + 1}</td>
                   <td>{joint.lengthMeters.toFixed(3)}</td>
-                  <td>{joint.lengthPixels.toFixed(1)}</td>
                   <td>{joint.orientation?.toFixed(1) || 'N/A'}</td>
-                  <td>({joint.start.x.toFixed(0)}, {joint.start.y.toFixed(0)})</td>
-                  <td>({joint.end.x.toFixed(0)}, {joint.end.y.toFixed(0)})</td>
                 </tr>
               ))}
             </tbody>
@@ -329,31 +315,31 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
             onClick={handleExportPDF}
             disabled={isExporting !== null}
           >
-            {isExporting === 'pdf' ? '⏳ Exporting...' : '📄 Export PDF Report'}
+            {isExporting === 'pdf' ? '⏳...' : '📄 PDF'}
           </button>
           <button 
             className="btn-export" 
             onClick={handleExportCSV}
             disabled={isExporting !== null}
           >
-            {isExporting === 'csv' ? '⏳ Exporting...' : '📊 Export CSV Data'}
+            {isExporting === 'csv' ? '⏳...' : '📊 CSV'}
           </button>
           <button 
             className="btn-export" 
             onClick={handleExportImage}
             disabled={isExporting !== null}
           >
-            {isExporting === 'image' ? '⏳ Exporting...' : '🖼️ Export Annotated Image'}
+            {isExporting === 'image' ? '⏳...' : '🖼️ Image'}
           </button>
         </div>
       </div>
 
       <div className="button-group">
         <button className="btn-secondary" onClick={onBack}>
-          ← Back to Edit
+          ← Back
         </button>
         <button className="btn-primary" onClick={onStartNew}>
-          🔄 Start New Analysis
+          🔄 New Analysis
         </button>
       </div>
     </div>
