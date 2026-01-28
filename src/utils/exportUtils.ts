@@ -1,5 +1,7 @@
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { ProjectData, FractureStats, Joint, ScaleData } from '../types';
 
 // Unit conversion constants
@@ -73,6 +75,36 @@ const generateFilename = (prefix: string, extension: string): string => {
 };
 
 /**
+ * Format length with unit conversion
+ */
+const formatLength = (meters: number, useImperial: boolean): string => {
+  if (useImperial) {
+    return `${(meters * METERS_TO_FEET).toFixed(3)} ft`;
+  }
+  return `${meters.toFixed(3)} m`;
+};
+
+/**
+ * Format area with unit conversion
+ */
+const formatArea = (sqMeters: number, useImperial: boolean): string => {
+  if (useImperial) {
+    return `${(sqMeters * SQ_METERS_TO_SQ_FEET).toFixed(2)} ft²`;
+  }
+  return `${sqMeters.toFixed(2)} m²`;
+};
+
+/**
+ * Format density with unit conversion
+ */
+const formatDensity = (density: number, useImperial: boolean): string => {
+  if (useImperial) {
+    return `${(density / METERS_TO_FEET * SQ_METERS_TO_SQ_FEET).toFixed(4)} ft/ft²`;
+  }
+  return `${density.toFixed(4)} m/m²`;
+};
+
+/**
  * Export annotated image from canvas
  */
 export const exportToImage = async (
@@ -127,7 +159,6 @@ export const exportToCSV = async (
 ): Promise<void> => {
   const lengthUnit = useImperial ? 'ft' : 'm';
   const areaUnit = useImperial ? 'ft²' : 'm²';
-  const densityUnit = useImperial ? 'ft/ft²' : 'm/m²';
   
   const convertLength = (m: number) => useImperial ? m * METERS_TO_FEET : m;
   const convertArea = (m2: number) => useImperial ? m2 * SQ_METERS_TO_SQ_FEET : m2;
@@ -152,7 +183,7 @@ export const exportToCSV = async (
   csv += `Min Length (${lengthUnit}),${convertLength(stats.minLength).toFixed(3)}\n`;
   csv += `Max Length (${lengthUnit}),${convertLength(stats.maxLength).toFixed(3)}\n`;
   csv += `Area Analyzed (${areaUnit}),${convertArea(stats.areaAnalyzed).toFixed(2)}\n`;
-  csv += `P21 Density (${densityUnit}),${convertDensity(stats.p21).toFixed(4)}\n`;
+  csv += `P21 Density,${convertDensity(stats.p21).toFixed(4)}\n`;
   csv += '\n';
 
   // Joint Sets section
@@ -203,7 +234,7 @@ export const exportToCSV = async (
 };
 
 /**
- * Export full report to PDF using jsPDF
+ * Export full report to PDF using jsPDF and autoTable
  */
 export const exportToPDF = async (
   projectData: ProjectData,
@@ -221,241 +252,286 @@ export const exportToPDF = async (
   const convertDensity = (d: number) => useImperial ? d / METERS_TO_FEET * SQ_METERS_TO_SQ_FEET : d;
 
   try {
-    // Dynamically import jsPDF
-    const jsPDFModule = await import('jspdf');
-    const jsPDF = jsPDFModule.default;
-    
-    // Create PDF document (portrait, points, letter size)
-    const doc = new jsPDF({
-      orientation: 'portrait',
-      unit: 'pt',
-      format: 'letter'
-    });
-    
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 40;
-    let yPos = margin;
-    
-    // Helper function to add text and track position
-    const addText = (text: string, fontSize: number, isBold: boolean = false, color: number[] = [0, 0, 0]) => {
-      doc.setFontSize(fontSize);
-      doc.setFont('helvetica', isBold ? 'bold' : 'normal');
-      doc.setTextColor(color[0], color[1], color[2]);
-      doc.text(text, margin, yPos);
-      yPos += fontSize * 1.4;
-    };
-    
-    // Helper to check if we need a new page
-    const checkNewPage = (neededSpace: number) => {
-      if (yPos + neededSpace > pageHeight - margin) {
-        doc.addPage();
-        yPos = margin;
-        return true;
-      }
-      return false;
-    };
+    // Create PDF document (portrait, mm, A4)
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 15;
+
+    // === PAGE 1: Title and Statistics ===
     
     // Title
-    addText('Rock Joint Analysis Report', 18, true, [30, 58, 95]);
-    yPos += 10;
-    
-    // Header info
-    addText(`Site: ${projectData.siteName || 'Not specified'}`, 11);
-    addText(`Date: ${projectData.timestamp ? new Date(projectData.timestamp).toLocaleString() : 'Not recorded'}`, 11);
-    addText(`Units: ${useImperial ? 'Imperial (ft)' : 'Metric (m)'}`, 11);
-    
+    pdf.setFontSize(20);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('Rock Joint Analysis Report', margin, margin + 10);
+
+    // Metadata
+    pdf.setFontSize(10);
+    pdf.setFont('helvetica', 'normal');
+    pdf.text(`Site: ${projectData.siteName || 'Not specified'}`, margin, margin + 18);
+    pdf.text(`Date: ${projectData.timestamp ? new Date(projectData.timestamp).toLocaleString() : 'Not recorded'}`, margin, margin + 24);
+    pdf.text(`Units: ${useImperial ? 'Imperial' : 'Metric'}`, margin, margin + 30);
+
     if (projectData.gpsCoordinates) {
-      addText(`GPS: ${projectData.gpsCoordinates.latitude.toFixed(6)}, ${projectData.gpsCoordinates.longitude.toFixed(6)}`, 11);
+      pdf.text(`GPS: ${projectData.gpsCoordinates.latitude.toFixed(6)}, ${projectData.gpsCoordinates.longitude.toFixed(6)}`, margin, margin + 36);
     }
-    
-    if (projectData.faceOrientation) {
-      addText(`Face Orientation: Azimuth ${projectData.faceOrientation.azimuth}°, Dip ${projectData.faceOrientation.dip}°`, 11);
-    }
-    
-    yPos += 15;
-    
-    // Add annotated image if available
-    if (canvas) {
-      checkNewPage(300);
-      addText('Annotated Image', 14, true);
-      yPos += 5;
+
+    // Face Orientation
+    let yPos = margin + 48;
+    pdf.setFontSize(14);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('Face Orientation', margin, yPos);
+
+    pdf.setFontSize(11);
+    pdf.setFont('helvetica', 'normal');
+    yPos += 7;
+    pdf.text(`Azimuth: ${projectData.faceOrientation.azimuth}°`, margin + 5, yPos);
+    yPos += 6;
+    pdf.text(`Dip: ${projectData.faceOrientation.dip}°`, margin + 5, yPos);
+
+    // Statistics Summary
+    yPos += 12;
+    pdf.setFontSize(14);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('Fracture Statistics Summary', margin, yPos);
+    yPos += 5;
+
+    const summaryData = [
+      ['Total Joints', `${stats.jointCount}`],
+      ['Total Trace Length', `${convertLength(stats.totalLength).toFixed(3)} ${lengthUnit}`],
+      ['Mean Trace Length', `${convertLength(stats.meanLength).toFixed(3)} ${lengthUnit}`],
+      ['Median Trace Length', `${convertLength(stats.medianLength).toFixed(3)} ${lengthUnit}`],
+      ['Min Trace Length', `${convertLength(stats.minLength).toFixed(3)} ${lengthUnit}`],
+      ['Max Trace Length', `${convertLength(stats.maxLength).toFixed(3)} ${lengthUnit}`],
+      ['Image Area', `${convertArea(stats.areaAnalyzed).toFixed(2)} ${areaUnit}`],
+      ['Fracture Density (P21)', `${convertDensity(stats.p21).toFixed(4)} ${densityUnit}`],
+      ['Fracture Frequency', `${(stats.jointCount / Math.sqrt(convertArea(stats.areaAnalyzed))).toFixed(2)} joints/${lengthUnit}`],
+    ];
+
+    autoTable(pdf, {
+      startY: yPos,
+      head: [['Parameter', 'Value']],
+      body: summaryData,
+      theme: 'grid',
+      headStyles: { fillColor: [52, 152, 219] },
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 9 }
+    });
+
+    // Joint Sets Table (if exists)
+    if (jointSets.length > 0) {
+      yPos = (pdf as any).lastAutoTable.finalY + 10;
       
+      // Check if we need a new page for rosette + table
+      if (yPos > pageHeight - 140) {
+        pdf.addPage();
+        yPos = margin;
+      }
+      
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('Joint Set Orientation Clusters', margin, yPos);
+      yPos += 8;
+
+      // Draw Rosette Diagram
+      const rosetteCenterX = margin + 40;
+      const rosetteCenterY = yPos + 40;
+      const rosetteRadius = 35;
+      
+      // Background circle
+      pdf.setDrawColor(200, 200, 200);
+      pdf.setFillColor(248, 249, 250);
+      pdf.circle(rosetteCenterX, rosetteCenterY, rosetteRadius, 'FD');
+      
+      // Concentric circles
+      pdf.setDrawColor(220, 220, 220);
+      [0.25, 0.5, 0.75].forEach(scale => {
+        pdf.circle(rosetteCenterX, rosetteCenterY, rosetteRadius * scale, 'S');
+      });
+      
+      // Cross lines (N-S, E-W)
+      pdf.setDrawColor(180, 180, 180);
+      pdf.line(rosetteCenterX, rosetteCenterY - rosetteRadius, rosetteCenterX, rosetteCenterY + rosetteRadius);
+      pdf.line(rosetteCenterX - rosetteRadius, rosetteCenterY, rosetteCenterX + rosetteRadius, rosetteCenterY);
+      
+      // Direction labels
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setTextColor(100, 100, 100);
+      pdf.text('N', rosetteCenterX - 2, rosetteCenterY - rosetteRadius - 2);
+      pdf.text('S', rosetteCenterX - 2, rosetteCenterY + rosetteRadius + 5);
+      pdf.text('E', rosetteCenterX + rosetteRadius + 2, rosetteCenterY + 1);
+      pdf.text('W', rosetteCenterX - rosetteRadius - 6, rosetteCenterY + 1);
+      
+      // Draw rose petals for each joint set
+      const maxCount = Math.max(...jointSets.map(s => s.count));
+      
+      jointSets.forEach((set) => {
+        // Convert hex color to RGB
+        const hexToRgb = (hex: string) => {
+          const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+          return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+          } : { r: 0, g: 255, b: 0 };
+        };
+        
+        const rgb = hexToRgb(set.color);
+        pdf.setFillColor(rgb.r, rgb.g, rgb.b);
+        pdf.setDrawColor(rgb.r, rgb.g, rgb.b);
+        
+        // Convert orientation to radians (0° = North = up)
+        const angleRad = (set.meanOrientation - 90) * (Math.PI / 180);
+        const oppositeRad = angleRad + Math.PI;
+        
+        // Scale petal length by count
+        const petalLength = (set.count / maxCount) * rosetteRadius * 0.85 + rosetteRadius * 0.15;
+        
+        // Draw bidirectional petal as two triangles
+        const halfWidth = 7.5 * (Math.PI / 180); // 7.5 degrees half-width
+        
+        // First petal (primary direction)
+        const p1x = rosetteCenterX + Math.cos(angleRad - halfWidth) * 5;
+        const p1y = rosetteCenterY + Math.sin(angleRad - halfWidth) * 5;
+        const p2x = rosetteCenterX + Math.cos(angleRad) * petalLength;
+        const p2y = rosetteCenterY + Math.sin(angleRad) * petalLength;
+        const p3x = rosetteCenterX + Math.cos(angleRad + halfWidth) * 5;
+        const p3y = rosetteCenterY + Math.sin(angleRad + halfWidth) * 5;
+        
+        pdf.triangle(p1x, p1y, p2x, p2y, p3x, p3y, 'F');
+        
+        // Opposite petal
+        const p4x = rosetteCenterX + Math.cos(oppositeRad - halfWidth) * 5;
+        const p4y = rosetteCenterY + Math.sin(oppositeRad - halfWidth) * 5;
+        const p5x = rosetteCenterX + Math.cos(oppositeRad) * petalLength;
+        const p5y = rosetteCenterY + Math.sin(oppositeRad) * petalLength;
+        const p6x = rosetteCenterX + Math.cos(oppositeRad + halfWidth) * 5;
+        const p6y = rosetteCenterY + Math.sin(oppositeRad + halfWidth) * 5;
+        
+        pdf.triangle(p4x, p4y, p5x, p5y, p6x, p6y, 'F');
+      });
+      
+      // Center circle
+      pdf.setFillColor(255, 255, 255);
+      pdf.setDrawColor(100, 100, 100);
+      pdf.circle(rosetteCenterX, rosetteCenterY, 4, 'FD');
+      
+      // Reset text color
+      pdf.setTextColor(0, 0, 0);
+      
+      // Joint Sets Table (to the right of rosette)
+      const tableStartX = margin + 90;
+      yPos += 2;
+
+      const setData = jointSets.map(set => [
+        `Set ${set.id}`,
+        `${set.meanOrientation}°`,
+        set.count.toString(),
+        `${((set.count / stats.jointCount) * 100).toFixed(1)}%`,
+        `${convertLength(set.meanLength).toFixed(3)} ${lengthUnit}`,
+        `${convertLength(set.totalLength).toFixed(3)} ${lengthUnit}`
+      ]);
+
+      autoTable(pdf, {
+        startY: yPos,
+        head: [['Set', 'Orient', 'Count', '%', 'Mean Len', 'Total Len']],
+        body: setData,
+        theme: 'striped',
+        headStyles: { fillColor: [230, 126, 34], fontSize: 7 },
+        margin: { left: tableStartX, right: margin },
+        styles: { fontSize: 7 },
+        columnStyles: {
+          0: { cellWidth: 15 },
+          1: { cellWidth: 15 },
+          2: { cellWidth: 15 },
+          3: { cellWidth: 12 },
+          4: { cellWidth: 22 },
+          5: { cellWidth: 22 }
+        }
+      });
+      
+      // Update yPos to be below both rosette and table
+      const rosetteBottom = rosetteCenterY + rosetteRadius + 10;
+      const tableBottom = (pdf as any).lastAutoTable.finalY;
+      yPos = Math.max(rosetteBottom, tableBottom) + 5;
+    }
+
+    // === PAGE 2: Annotated Image ===
+    pdf.addPage();
+    pdf.setFontSize(14);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('Annotated Image', margin, margin + 10);
+
+    if (canvas) {
       try {
         const imgData = canvas.toDataURL('image/jpeg', 0.8);
-        const imgWidth = pageWidth - (margin * 2);
-        const imgHeight = (canvas.height / canvas.width) * imgWidth;
-        const maxImgHeight = 280;
-        const finalHeight = Math.min(imgHeight, maxImgHeight);
-        const finalWidth = (finalHeight / imgHeight) * imgWidth;
-        
-        doc.addImage(imgData, 'JPEG', margin, yPos, finalWidth, finalHeight);
-        yPos += finalHeight + 20;
+        const imgWidth = pageWidth - 2 * margin;
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        const maxHeight = pageHeight - 2 * margin - 20;
+
+        if (imgHeight > maxHeight) {
+          const scale = maxHeight / imgHeight;
+          pdf.addImage(imgData, 'JPEG', margin, margin + 15, imgWidth * scale, imgHeight * scale);
+        } else {
+          pdf.addImage(imgData, 'JPEG', margin, margin + 15, imgWidth, imgHeight);
+        }
       } catch (imgError) {
         console.error('Error adding image to PDF:', imgError);
-        addText('(Image could not be added)', 10);
+        pdf.setFontSize(10);
+        pdf.text('(Image could not be added to PDF)', margin, margin + 25);
       }
-    }
-    
-    // Statistics section
-    checkNewPage(150);
-    addText('Fracture Statistics', 14, true);
-    yPos += 5;
-    
-    const statsData = [
-      ['Total Joints', `${stats.jointCount}`],
-      ['Total Trace Length', `${convertLength(stats.totalLength).toFixed(2)} ${lengthUnit}`],
-      ['Mean Length', `${convertLength(stats.meanLength).toFixed(3)} ${lengthUnit}`],
-      ['Median Length', `${convertLength(stats.medianLength).toFixed(3)} ${lengthUnit}`],
-      ['Length Range', `${convertLength(stats.minLength).toFixed(3)} - ${convertLength(stats.maxLength).toFixed(3)} ${lengthUnit}`],
-      ['Area Analyzed', `${convertArea(stats.areaAnalyzed).toFixed(2)} ${areaUnit}`],
-      ['P21 Density', `${convertDensity(stats.p21).toFixed(4)} ${densityUnit}`],
-    ];
-    
-    statsData.forEach(([label, value]) => {
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${label}:`, margin, yPos);
-      doc.setFont('helvetica', 'bold');
-      doc.text(value, margin + 120, yPos);
-      yPos += 14;
-    });
-    
-    yPos += 10;
-    
-    // Joint Sets section
-    if (jointSets.length > 0) {
-      checkNewPage(200);
-      addText('Joint Set Orientation Clustering', 14, true);
-      addText('(Joints grouped into 15° orientation bins)', 9, false, [100, 100, 100]);
-      yPos += 5;
-      
-      // Table header
-      const colWidths = [40, 80, 60, 60, 100, 100];
-      const headers = ['Set', 'Orientation', 'Count', '%', `Mean Len (${lengthUnit})`, `Total Len (${lengthUnit})`];
-      
-      doc.setFillColor(240, 240, 240);
-      doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'bold');
-      
-      let xPos = margin + 5;
-      headers.forEach((header, i) => {
-        doc.text(header, xPos, yPos);
-        xPos += colWidths[i];
-      });
-      yPos += 18;
-      
-      // Table rows
-      doc.setFont('helvetica', 'normal');
-      jointSets.forEach((set, index) => {
-        if (checkNewPage(16)) {
-          // Redraw header on new page
-          doc.setFillColor(240, 240, 240);
-          doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
-          doc.setFont('helvetica', 'bold');
-          xPos = margin + 5;
-          headers.forEach((header, i) => {
-            doc.text(header, xPos, yPos);
-            xPos += colWidths[i];
-          });
-          yPos += 18;
-          doc.setFont('helvetica', 'normal');
-        }
-        
-        xPos = margin + 5;
-        const rowData = [
-          `${set.id}`,
-          `${set.meanOrientation}°`,
-          `${set.count}`,
-          `${((set.count / stats.jointCount) * 100).toFixed(1)}%`,
-          `${convertLength(set.meanLength).toFixed(3)}`,
-          `${convertLength(set.totalLength).toFixed(3)}`
-        ];
-        
-        rowData.forEach((cell, i) => {
-          doc.text(cell, xPos, yPos);
-          xPos += colWidths[i];
-        });
-        yPos += 14;
-      });
-      
-      yPos += 15;
-    }
-    
-    // Individual Joint Data (if space permits)
-    if (projectData.joints.length <= 30) {
-      checkNewPage(100);
-      addText('Individual Joint Data', 14, true);
-      yPos += 5;
-      
-      const jointColWidths = [30, 70, 70, 90, 90];
-      const jointHeaders = ['#', `Length (${lengthUnit})`, 'Orient (°)', 'Start (px)', 'End (px)'];
-      
-      doc.setFillColor(240, 240, 240);
-      doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'bold');
-      
-      let xPos = margin + 5;
-      jointHeaders.forEach((header, i) => {
-        doc.text(header, xPos, yPos);
-        xPos += jointColWidths[i];
-      });
-      yPos += 16;
-      
-      doc.setFont('helvetica', 'normal');
-      projectData.joints.forEach((joint, index) => {
-        if (checkNewPage(14)) {
-          // Redraw header
-          doc.setFillColor(240, 240, 240);
-          doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
-          doc.setFont('helvetica', 'bold');
-          xPos = margin + 5;
-          jointHeaders.forEach((header, i) => {
-            doc.text(header, xPos, yPos);
-            xPos += jointColWidths[i];
-          });
-          yPos += 16;
-          doc.setFont('helvetica', 'normal');
-        }
-        
-        xPos = margin + 5;
-        const rowData = [
-          `${index + 1}`,
-          `${convertLength(joint.lengthMeters || 0).toFixed(3)}`,
-          `${(joint.orientation || 0).toFixed(1)}`,
-          `(${Math.round(joint.start.x)}, ${Math.round(joint.start.y)})`,
-          `(${Math.round(joint.end.x)}, ${Math.round(joint.end.y)})`
-        ];
-        
-        rowData.forEach((cell, i) => {
-          doc.text(cell, xPos, yPos);
-          xPos += jointColWidths[i];
-        });
-        yPos += 12;
-      });
     } else {
-      checkNewPage(30);
-      addText(`Individual Joint Data: ${projectData.joints.length} joints (see CSV export for full data)`, 10, false, [100, 100, 100]);
+      pdf.setFontSize(10);
+      pdf.text('(No annotated image available)', margin, margin + 25);
     }
-    
-    // Footer
-    doc.setFontSize(8);
-    doc.setTextColor(100, 100, 100);
-    doc.text('Generated by Rock Joint Analyzer v1.5', margin, pageHeight - 30);
-    doc.text('Note: Orientations shown are apparent orientations in the photograph plane.', margin, pageHeight - 20);
-    
-    // Save the PDF
+
+    // === PAGE 3: Individual Joint Data ===
+    pdf.addPage();
+    pdf.setFontSize(14);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('Individual Joint Data', margin, margin + 10);
+
+    const jointTableData = projectData.joints.map((joint, index) => {
+      const setInfo = jointSets.find(s => s.joints.some(j => j.id === joint.id));
+      return [
+        (index + 1).toString(),
+        `${convertLength(joint.lengthMeters || 0).toFixed(3)}`,
+        joint.lengthPixels.toFixed(1),
+        (joint.orientation || 0).toFixed(1),
+        setInfo ? `Set ${setInfo.id}` : '-',
+        `(${joint.start.x.toFixed(0)}, ${joint.start.y.toFixed(0)})`,
+        `(${joint.end.x.toFixed(0)}, ${joint.end.y.toFixed(0)})`
+      ];
+    });
+
+    autoTable(pdf, {
+      startY: margin + 15,
+      head: [['#', `Length (${lengthUnit})`, 'Length (px)', 'Orient (°)', 'Set', 'Start (px)', 'End (px)']],
+      body: jointTableData,
+      theme: 'striped',
+      headStyles: { fillColor: [46, 204, 113] },
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 7 }
+    });
+
+    // Footer on last page
+    const finalY = (pdf as any).lastAutoTable.finalY + 15;
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'italic');
+    pdf.setTextColor(100, 100, 100);
+    pdf.text('Generated by Rock Joint Analyzer v1.5', margin, finalY);
+    pdf.text('Note: Orientations are apparent orientations in the photograph plane.', margin, finalY + 5);
+
+    // Generate PDF as base64
+    const pdfBase64 = pdf.output('datauristring').split(',')[1];
+
+    // Save to filesystem
     const filename = generateFilename(
       (projectData.siteName || 'rock_joint_report').replace(/[^a-zA-Z0-9]/g, '_'),
       'pdf'
     );
-    
-    // Get PDF as base64
-    const pdfBase64 = doc.output('datauristring').split(',')[1];
-    
-    // Save to filesystem
+
     const result = await Filesystem.writeFile({
       path: filename,
       data: pdfBase64,
