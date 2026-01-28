@@ -1,341 +1,479 @@
-import { ProjectData, FractureStats } from '../types';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { Capacitor } from '@capacitor/core';
+import { ProjectData, FractureStats, Joint, ScaleData } from '../types';
 
-const isNativePlatform = (): boolean => {
-  return Capacitor.isNativePlatform();
-};
+// Unit conversion constants
+const METERS_TO_FEET = 3.28084;
+const SQ_METERS_TO_SQ_FEET = 10.7639;
 
-const saveAndShareFile = async (
-  fileName: string,
-  data: string,
-  mimeType: string
-): Promise<void> => {
-  if (isNativePlatform()) {
-    try {
-      const result = await Filesystem.writeFile({
-        path: fileName,
-        data: data,
-        directory: Directory.Documents,
-        recursive: true,
-      });
-      await Share.share({
-        title: fileName,
-        url: result.uri,
-        dialogTitle: 'Save or Share Report',
-      });
-    } catch (error) {
-      console.error('Error saving/sharing file:', error);
-      throw new Error(`Failed to save file: ${error}`);
-    }
-  } else {
-    const byteCharacters = atob(data);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-};
+interface JointSet {
+  id: number;
+  meanOrientation: number;
+  count: number;
+  joints: Joint[];
+  totalLength: number;
+  meanLength: number;
+  color: string;
+}
 
-const saveAndShareTextFile = async (
-  fileName: string,
-  content: string,
-  mimeType: string
-): Promise<void> => {
-  if (isNativePlatform()) {
-    try {
-      const result = await Filesystem.writeFile({
-        path: fileName,
-        data: content,
-        directory: Directory.Documents,
-        encoding: 'utf8' as any,
-        recursive: true,
-      });
-      await Share.share({
-        title: fileName,
-        url: result.uri,
-        dialogTitle: 'Save or Share Data',
-      });
-    } catch (error) {
-      console.error('Error saving/sharing file:', error);
-      throw new Error(`Failed to save file: ${error}`);
-    }
-  } else {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-};
-
-const formatCoordinateDMS = (value: number, isLatitude: boolean): string => {
-  const absolute = Math.abs(value);
-  const degrees = Math.floor(absolute);
-  const minutesDecimal = (absolute - degrees) * 60;
-  const minutes = Math.floor(minutesDecimal);
-  const seconds = ((minutesDecimal - minutes) * 60).toFixed(1);
-  const direction = isLatitude 
-    ? (value >= 0 ? 'N' : 'S')
-    : (value >= 0 ? 'E' : 'W');
-  return `${degrees}° ${minutes}' ${seconds}" ${direction}`;
-};
-
+/**
+ * Calculate fracture statistics from detected joints
+ */
 export const calculateFractureStats = (
-  joints: any[],
-  scale: any,
-  imageWidth: number,
-  imageHeight: number
+  joints: Joint[],
+  scale: ScaleData,
+  photoWidth: number,
+  photoHeight: number
 ): FractureStats => {
-  if (joints.length === 0) {
-    return {
-      totalJoints: 0,
-      meanTraceLength: 0,
-      minTraceLength: 0,
-      maxTraceLength: 0,
-      totalTraceLengthMeters: 0,
-      imageAreaM2: 0,
-      fractureDensityP21: 0,
-      traceLengthDistribution: [],
-    };
-  }
+  // Calculate area in square meters
+  const widthMeters = photoWidth / scale.pixelsPerMeter;
+  const heightMeters = photoHeight / scale.pixelsPerMeter;
+  const areaAnalyzed = widthMeters * heightMeters;
 
-  const traceLengths = joints.map(j => j.lengthMeters);
-  const totalTraceLengthMeters = traceLengths.reduce((sum, len) => sum + len, 0);
-  const meanTraceLength = totalTraceLengthMeters / joints.length;
-  const minTraceLength = Math.min(...traceLengths);
-  const maxTraceLength = Math.max(...traceLengths);
+  // Calculate total trace length
+  const totalLength = joints.reduce((sum, joint) => sum + (joint.lengthMeters || 0), 0);
 
-  const imageWidthMeters = imageWidth / scale.pixelsPerMeter;
-  const imageHeightMeters = imageHeight / scale.pixelsPerMeter;
-  const imageAreaM2 = imageWidthMeters * imageHeightMeters;
-  const fractureDensityP21 = totalTraceLengthMeters / imageAreaM2;
+  // Calculate statistics
+  const meanLength = joints.length > 0 ? totalLength / joints.length : 0;
+  
+  const sortedLengths = joints.map(j => j.lengthMeters || 0).sort((a, b) => a - b);
+  const medianLength = joints.length > 0 
+    ? sortedLengths[Math.floor(sortedLengths.length / 2)] 
+    : 0;
+  
+  const minLength = joints.length > 0 ? Math.min(...sortedLengths) : 0;
+  const maxLength = joints.length > 0 ? Math.max(...sortedLengths) : 0;
 
-  const numBins = 10;
-  const binSize = (maxTraceLength - minTraceLength) / numBins || 1;
-  const traceLengthDistribution = new Array(numBins).fill(0);
-
-  traceLengths.forEach(length => {
-    const binIndex = Math.min(
-      Math.floor((length - minTraceLength) / binSize),
-      numBins - 1
-    );
-    traceLengthDistribution[binIndex]++;
-  });
+  // P21 = Total trace length / Area
+  const p21 = areaAnalyzed > 0 ? totalLength / areaAnalyzed : 0;
+  
+  // Frequency = Number of joints / scan line length (approximate as sqrt of area)
+  const scanLineLength = Math.sqrt(areaAnalyzed);
+  const frequency = scanLineLength > 0 ? joints.length / scanLineLength : 0;
 
   return {
-    totalJoints: joints.length,
-    meanTraceLength,
-    minTraceLength,
-    maxTraceLength,
-    totalTraceLengthMeters,
-    imageAreaM2,
-    fractureDensityP21,
-    traceLengthDistribution,
+    totalLength,
+    meanLength,
+    medianLength,
+    minLength,
+    maxLength,
+    areaAnalyzed,
+    p21,
+    frequency,
+    jointCount: joints.length
   };
 };
 
+/**
+ * Generate a unique filename with timestamp
+ */
+const generateFilename = (prefix: string, extension: string): string => {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return `${prefix}_${timestamp}.${extension}`;
+};
+
+/**
+ * Export annotated image from canvas
+ */
+export const exportToImage = async (
+  canvas: HTMLCanvasElement | null,
+  siteName: string
+): Promise<void> => {
+  if (!canvas) {
+    throw new Error('Canvas not available for export');
+  }
+
+  try {
+    // Get canvas as base64 PNG
+    const dataUrl = canvas.toDataURL('image/png');
+    const base64Data = dataUrl.split(',')[1];
+    
+    const filename = generateFilename(
+      siteName.replace(/[^a-zA-Z0-9]/g, '_') || 'rock_joint_analysis',
+      'png'
+    );
+
+    // Save to filesystem
+    const result = await Filesystem.writeFile({
+      path: filename,
+      data: base64Data,
+      directory: Directory.Documents,
+    });
+
+    console.log('Image saved:', result.uri);
+
+    // Share the file
+    await Share.share({
+      title: 'Rock Joint Analysis Image',
+      text: `Annotated joint analysis image - ${siteName}`,
+      url: result.uri,
+      dialogTitle: 'Share Analysis Image'
+    });
+
+  } catch (error) {
+    console.error('Image export error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Export data to CSV format
+ */
+export const exportToCSV = async (
+  projectData: ProjectData,
+  stats: FractureStats,
+  jointSets: JointSet[],
+  useImperial: boolean
+): Promise<void> => {
+  const lengthUnit = useImperial ? 'ft' : 'm';
+  const areaUnit = useImperial ? 'ft²' : 'm²';
+  const densityUnit = useImperial ? 'ft/ft²' : 'm/m²';
+  
+  const convertLength = (m: number) => useImperial ? m * METERS_TO_FEET : m;
+  const convertArea = (m2: number) => useImperial ? m2 * SQ_METERS_TO_SQ_FEET : m2;
+  const convertDensity = (d: number) => useImperial ? d / METERS_TO_FEET * SQ_METERS_TO_SQ_FEET : d;
+
+  // Build CSV content
+  let csv = '';
+  
+  // Header section
+  csv += 'Rock Joint Analysis Report\n';
+  csv += `Site,${projectData.siteName || 'Unknown'}\n`;
+  csv += `Date,${projectData.timestamp ? new Date(projectData.timestamp).toLocaleString() : 'Unknown'}\n`;
+  csv += `Units,${useImperial ? 'Imperial' : 'Metric'}\n`;
+  csv += '\n';
+
+  // Statistics section
+  csv += 'FRACTURE STATISTICS\n';
+  csv += `Total Joints,${stats.jointCount}\n`;
+  csv += `Total Trace Length (${lengthUnit}),${convertLength(stats.totalLength).toFixed(3)}\n`;
+  csv += `Mean Length (${lengthUnit}),${convertLength(stats.meanLength).toFixed(3)}\n`;
+  csv += `Median Length (${lengthUnit}),${convertLength(stats.medianLength).toFixed(3)}\n`;
+  csv += `Min Length (${lengthUnit}),${convertLength(stats.minLength).toFixed(3)}\n`;
+  csv += `Max Length (${lengthUnit}),${convertLength(stats.maxLength).toFixed(3)}\n`;
+  csv += `Area Analyzed (${areaUnit}),${convertArea(stats.areaAnalyzed).toFixed(2)}\n`;
+  csv += `P21 Density (${densityUnit}),${convertDensity(stats.p21).toFixed(4)}\n`;
+  csv += '\n';
+
+  // Joint Sets section
+  if (jointSets.length > 0) {
+    csv += 'JOINT SET CLUSTERING (15° bins)\n';
+    csv += `Set,Orientation (°),Count,Percentage (%),Mean Length (${lengthUnit}),Total Length (${lengthUnit})\n`;
+    jointSets.forEach(set => {
+      const pct = ((set.count / stats.jointCount) * 100).toFixed(1);
+      csv += `${set.id},${set.meanOrientation},${set.count},${pct},${convertLength(set.meanLength).toFixed(3)},${convertLength(set.totalLength).toFixed(3)}\n`;
+    });
+    csv += '\n';
+  }
+
+  // Individual joints section
+  csv += 'INDIVIDUAL JOINT DATA\n';
+  csv += `Joint #,Length (${lengthUnit}),Orientation (°),Start X (px),Start Y (px),End X (px),End Y (px)\n`;
+  projectData.joints.forEach((joint, index) => {
+    csv += `${index + 1},${convertLength(joint.lengthMeters || 0).toFixed(3)},${(joint.orientation || 0).toFixed(1)},`;
+    csv += `${Math.round(joint.start.x)},${Math.round(joint.start.y)},${Math.round(joint.end.x)},${Math.round(joint.end.y)}\n`;
+  });
+
+  try {
+    const filename = generateFilename(
+      (projectData.siteName || 'rock_joint_analysis').replace(/[^a-zA-Z0-9]/g, '_'),
+      'csv'
+    );
+
+    const result = await Filesystem.writeFile({
+      path: filename,
+      data: csv,
+      directory: Directory.Documents,
+      encoding: Encoding.UTF8
+    });
+
+    console.log('CSV saved:', result.uri);
+
+    await Share.share({
+      title: 'Rock Joint Analysis Data',
+      text: `CSV data export - ${projectData.siteName || 'Analysis'}`,
+      url: result.uri,
+      dialogTitle: 'Share CSV Data'
+    });
+
+  } catch (error) {
+    console.error('CSV export error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Export full report to PDF using jsPDF
+ */
 export const exportToPDF = async (
   projectData: ProjectData,
   stats: FractureStats,
-  canvas: HTMLCanvasElement | null
+  jointSets: JointSet[],
+  canvas: HTMLCanvasElement | null,
+  useImperial: boolean
 ): Promise<void> => {
-  const pdf = new jsPDF('p', 'mm', 'a4');
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 15;
+  const lengthUnit = useImperial ? 'ft' : 'm';
+  const areaUnit = useImperial ? 'ft²' : 'm²';
+  const densityUnit = useImperial ? 'ft/ft²' : 'm/m²';
+  
+  const convertLength = (m: number) => useImperial ? m * METERS_TO_FEET : m;
+  const convertArea = (m2: number) => useImperial ? m2 * SQ_METERS_TO_SQ_FEET : m2;
+  const convertDensity = (d: number) => useImperial ? d / METERS_TO_FEET * SQ_METERS_TO_SQ_FEET : d;
 
-  pdf.setFontSize(20);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Rock Joint Analysis Report', margin, margin + 10);
-
-  pdf.setFontSize(10);
-  pdf.setFont('helvetica', 'normal');
-  pdf.text(`Analysis Date: ${new Date(projectData.timestamp).toLocaleString()}`, margin, margin + 18);
-
-  let yPos = margin + 30;
-
-  // Face Orientation
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Face Orientation', margin, yPos);
-
-  pdf.setFontSize(11);
-  pdf.setFont('helvetica', 'normal');
-  yPos += 7;
-  pdf.text(`Azimuth: ${projectData.faceOrientation.azimuth}°`, margin + 5, yPos);
-  yPos += 6;
-  pdf.text(`Dip: ${projectData.faceOrientation.dip}°`, margin + 5, yPos);
-
-  // GPS Location
-  if (projectData.gpsCoordinates) {
-    yPos += 12;
-    pdf.setFontSize(14);
-    pdf.setFont('helvetica', 'bold');
-    pdf.text('GPS Location', margin, yPos);
-
-    pdf.setFontSize(11);
-    pdf.setFont('helvetica', 'normal');
-    yPos += 7;
-    pdf.text(`Latitude: ${formatCoordinateDMS(projectData.gpsCoordinates.latitude, true)}`, margin + 5, yPos);
-    yPos += 6;
-    pdf.text(`Longitude: ${formatCoordinateDMS(projectData.gpsCoordinates.longitude, false)}`, margin + 5, yPos);
-    if (projectData.gpsCoordinates.altitude !== null) {
-      yPos += 6;
-      pdf.text(`Elevation: ${projectData.gpsCoordinates.altitude.toFixed(1)} m`, margin + 5, yPos);
+  try {
+    // Dynamically import jsPDF
+    const jsPDFModule = await import('jspdf');
+    const jsPDF = jsPDFModule.default;
+    
+    // Create PDF document (portrait, points, letter size)
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'pt',
+      format: 'letter'
+    });
+    
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 40;
+    let yPos = margin;
+    
+    // Helper function to add text and track position
+    const addText = (text: string, fontSize: number, isBold: boolean = false, color: number[] = [0, 0, 0]) => {
+      doc.setFontSize(fontSize);
+      doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+      doc.setTextColor(color[0], color[1], color[2]);
+      doc.text(text, margin, yPos);
+      yPos += fontSize * 1.4;
+    };
+    
+    // Helper to check if we need a new page
+    const checkNewPage = (neededSpace: number) => {
+      if (yPos + neededSpace > pageHeight - margin) {
+        doc.addPage();
+        yPos = margin;
+        return true;
+      }
+      return false;
+    };
+    
+    // Title
+    addText('Rock Joint Analysis Report', 18, true, [30, 58, 95]);
+    yPos += 10;
+    
+    // Header info
+    addText(`Site: ${projectData.siteName || 'Not specified'}`, 11);
+    addText(`Date: ${projectData.timestamp ? new Date(projectData.timestamp).toLocaleString() : 'Not recorded'}`, 11);
+    addText(`Units: ${useImperial ? 'Imperial (ft)' : 'Metric (m)'}`, 11);
+    
+    if (projectData.gpsCoordinates) {
+      addText(`GPS: ${projectData.gpsCoordinates.latitude.toFixed(6)}, ${projectData.gpsCoordinates.longitude.toFixed(6)}`, 11);
     }
-  }
-
-  // Fracture Statistics
-  yPos += 12;
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Fracture Statistics Summary', margin, yPos);
-
-  yPos += 7;
-
-  const summaryData = [
-    ['Total Joints', stats.totalJoints.toString()],
-    ['Mean Trace Length', `${stats.meanTraceLength.toFixed(3)} m`],
-    ['Min Trace Length', `${stats.minTraceLength.toFixed(3)} m`],
-    ['Max Trace Length', `${stats.maxTraceLength.toFixed(3)} m`],
-    ['Total Trace Length', `${stats.totalTraceLengthMeters.toFixed(3)} m`],
-    ['Image Area', `${stats.imageAreaM2.toFixed(2)} m²`],
-    ['Fracture Density (P21)', `${stats.fractureDensityP21.toFixed(4)} m/m²`],
-    ['Fracture Frequency', `${(stats.totalJoints / Math.sqrt(stats.imageAreaM2)).toFixed(2)} joints/m`],
-  ];
-
-  autoTable(pdf, {
-    startY: yPos,
-    head: [['Parameter', 'Value']],
-    body: summaryData,
-    theme: 'grid',
-    headStyles: { fillColor: [52, 152, 219] },
-    margin: { left: margin, right: margin },
-  });
-
-  // Page 2 - Image
-  pdf.addPage();
-
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Annotated Image', margin, margin + 10);
-
-  if (canvas) {
-    const imgData = canvas.toDataURL('image/jpeg', 0.8);
-    const imgWidth = pageWidth - 2 * margin;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    if (imgHeight > pageHeight - 2 * margin - 20) {
-      const scale = (pageHeight - 2 * margin - 20) / imgHeight;
-      pdf.addImage(imgData, 'JPEG', margin, margin + 15, imgWidth * scale, imgHeight * scale);
+    
+    if (projectData.faceOrientation) {
+      addText(`Face Orientation: Azimuth ${projectData.faceOrientation.azimuth}°, Dip ${projectData.faceOrientation.dip}°`, 11);
+    }
+    
+    yPos += 15;
+    
+    // Add annotated image if available
+    if (canvas) {
+      checkNewPage(300);
+      addText('Annotated Image', 14, true);
+      yPos += 5;
+      
+      try {
+        const imgData = canvas.toDataURL('image/jpeg', 0.8);
+        const imgWidth = pageWidth - (margin * 2);
+        const imgHeight = (canvas.height / canvas.width) * imgWidth;
+        const maxImgHeight = 280;
+        const finalHeight = Math.min(imgHeight, maxImgHeight);
+        const finalWidth = (finalHeight / imgHeight) * imgWidth;
+        
+        doc.addImage(imgData, 'JPEG', margin, yPos, finalWidth, finalHeight);
+        yPos += finalHeight + 20;
+      } catch (imgError) {
+        console.error('Error adding image to PDF:', imgError);
+        addText('(Image could not be added)', 10);
+      }
+    }
+    
+    // Statistics section
+    checkNewPage(150);
+    addText('Fracture Statistics', 14, true);
+    yPos += 5;
+    
+    const statsData = [
+      ['Total Joints', `${stats.jointCount}`],
+      ['Total Trace Length', `${convertLength(stats.totalLength).toFixed(2)} ${lengthUnit}`],
+      ['Mean Length', `${convertLength(stats.meanLength).toFixed(3)} ${lengthUnit}`],
+      ['Median Length', `${convertLength(stats.medianLength).toFixed(3)} ${lengthUnit}`],
+      ['Length Range', `${convertLength(stats.minLength).toFixed(3)} - ${convertLength(stats.maxLength).toFixed(3)} ${lengthUnit}`],
+      ['Area Analyzed', `${convertArea(stats.areaAnalyzed).toFixed(2)} ${areaUnit}`],
+      ['P21 Density', `${convertDensity(stats.p21).toFixed(4)} ${densityUnit}`],
+    ];
+    
+    statsData.forEach(([label, value]) => {
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${label}:`, margin, yPos);
+      doc.setFont('helvetica', 'bold');
+      doc.text(value, margin + 120, yPos);
+      yPos += 14;
+    });
+    
+    yPos += 10;
+    
+    // Joint Sets section
+    if (jointSets.length > 0) {
+      checkNewPage(200);
+      addText('Joint Set Orientation Clustering', 14, true);
+      addText('(Joints grouped into 15° orientation bins)', 9, false, [100, 100, 100]);
+      yPos += 5;
+      
+      // Table header
+      const colWidths = [40, 80, 60, 60, 100, 100];
+      const headers = ['Set', 'Orientation', 'Count', '%', `Mean Len (${lengthUnit})`, `Total Len (${lengthUnit})`];
+      
+      doc.setFillColor(240, 240, 240);
+      doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      
+      let xPos = margin + 5;
+      headers.forEach((header, i) => {
+        doc.text(header, xPos, yPos);
+        xPos += colWidths[i];
+      });
+      yPos += 18;
+      
+      // Table rows
+      doc.setFont('helvetica', 'normal');
+      jointSets.forEach((set, index) => {
+        if (checkNewPage(16)) {
+          // Redraw header on new page
+          doc.setFillColor(240, 240, 240);
+          doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
+          doc.setFont('helvetica', 'bold');
+          xPos = margin + 5;
+          headers.forEach((header, i) => {
+            doc.text(header, xPos, yPos);
+            xPos += colWidths[i];
+          });
+          yPos += 18;
+          doc.setFont('helvetica', 'normal');
+        }
+        
+        xPos = margin + 5;
+        const rowData = [
+          `${set.id}`,
+          `${set.meanOrientation}°`,
+          `${set.count}`,
+          `${((set.count / stats.jointCount) * 100).toFixed(1)}%`,
+          `${convertLength(set.meanLength).toFixed(3)}`,
+          `${convertLength(set.totalLength).toFixed(3)}`
+        ];
+        
+        rowData.forEach((cell, i) => {
+          doc.text(cell, xPos, yPos);
+          xPos += colWidths[i];
+        });
+        yPos += 14;
+      });
+      
+      yPos += 15;
+    }
+    
+    // Individual Joint Data (if space permits)
+    if (projectData.joints.length <= 30) {
+      checkNewPage(100);
+      addText('Individual Joint Data', 14, true);
+      yPos += 5;
+      
+      const jointColWidths = [30, 70, 70, 90, 90];
+      const jointHeaders = ['#', `Length (${lengthUnit})`, 'Orient (°)', 'Start (px)', 'End (px)'];
+      
+      doc.setFillColor(240, 240, 240);
+      doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      
+      let xPos = margin + 5;
+      jointHeaders.forEach((header, i) => {
+        doc.text(header, xPos, yPos);
+        xPos += jointColWidths[i];
+      });
+      yPos += 16;
+      
+      doc.setFont('helvetica', 'normal');
+      projectData.joints.forEach((joint, index) => {
+        if (checkNewPage(14)) {
+          // Redraw header
+          doc.setFillColor(240, 240, 240);
+          doc.rect(margin, yPos - 10, pageWidth - (margin * 2), 16, 'F');
+          doc.setFont('helvetica', 'bold');
+          xPos = margin + 5;
+          jointHeaders.forEach((header, i) => {
+            doc.text(header, xPos, yPos);
+            xPos += jointColWidths[i];
+          });
+          yPos += 16;
+          doc.setFont('helvetica', 'normal');
+        }
+        
+        xPos = margin + 5;
+        const rowData = [
+          `${index + 1}`,
+          `${convertLength(joint.lengthMeters || 0).toFixed(3)}`,
+          `${(joint.orientation || 0).toFixed(1)}`,
+          `(${Math.round(joint.start.x)}, ${Math.round(joint.start.y)})`,
+          `(${Math.round(joint.end.x)}, ${Math.round(joint.end.y)})`
+        ];
+        
+        rowData.forEach((cell, i) => {
+          doc.text(cell, xPos, yPos);
+          xPos += jointColWidths[i];
+        });
+        yPos += 12;
+      });
     } else {
-      pdf.addImage(imgData, 'JPEG', margin, margin + 15, imgWidth, imgHeight);
+      checkNewPage(30);
+      addText(`Individual Joint Data: ${projectData.joints.length} joints (see CSV export for full data)`, 10, false, [100, 100, 100]);
     }
-  }
-
-  // Page 3 - Joint Data
-  pdf.addPage();
-
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Individual Joint Data', margin, margin + 10);
-
-  const jointTableData = projectData.joints.map((joint, index) => [
-    (index + 1).toString(),
-    joint.lengthMeters.toFixed(3),
-    joint.lengthPixels.toFixed(1),
-    joint.orientation?.toFixed(1) || 'N/A',
-    `(${joint.start.x.toFixed(0)}, ${joint.start.y.toFixed(0)})`,
-    `(${joint.end.x.toFixed(0)}, ${joint.end.y.toFixed(0)})`,
-  ]);
-
-  autoTable(pdf, {
-    startY: margin + 15,
-    head: [['#', 'Length (m)', 'Length (px)', 'Orientation (°)', 'Start Point', 'End Point']],
-    body: jointTableData,
-    theme: 'striped',
-    headStyles: { fillColor: [52, 73, 94] },
-    margin: { left: margin, right: margin },
-    styles: { fontSize: 8 },
-  });
-
-  const fileName = `joint-analysis-${new Date().toISOString().split('T')[0]}.pdf`;
-  const pdfBase64 = pdf.output('datauristring').split(',')[1];
-  
-  await saveAndShareFile(fileName, pdfBase64, 'application/pdf');
-};
-
-export const exportToCSV = async (projectData: ProjectData, stats: FractureStats): Promise<void> => {
-  const rows: string[] = [];
-
-  rows.push('Rock Joint Analysis Data');
-  rows.push(`Analysis Date,${new Date(projectData.timestamp).toLocaleString()}`);
-  rows.push('');
-
-  rows.push('Face Orientation');
-  rows.push(`Azimuth,${projectData.faceOrientation.azimuth}`);
-  rows.push(`Dip,${projectData.faceOrientation.dip}`);
-  rows.push('');
-
-  if (projectData.gpsCoordinates) {
-    rows.push('GPS Location');
-    rows.push(`Latitude,${projectData.gpsCoordinates.latitude}`);
-    rows.push(`Longitude,${projectData.gpsCoordinates.longitude}`);
-    if (projectData.gpsCoordinates.altitude !== null) {
-      rows.push(`Elevation (m),${projectData.gpsCoordinates.altitude.toFixed(1)}`);
-    }
-    rows.push('');
-  }
-
-  rows.push('Summary Statistics');
-  rows.push(`Total Joints,${stats.totalJoints}`);
-  rows.push(`Mean Trace Length (m),${stats.meanTraceLength.toFixed(3)}`);
-  rows.push(`Min Trace Length (m),${stats.minTraceLength.toFixed(3)}`);
-  rows.push(`Max Trace Length (m),${stats.maxTraceLength.toFixed(3)}`);
-  rows.push(`Total Trace Length (m),${stats.totalTraceLengthMeters.toFixed(3)}`);
-  rows.push(`Image Area (m²),${stats.imageAreaM2.toFixed(2)}`);
-  rows.push(`Fracture Density P21 (m/m²),${stats.fractureDensityP21.toFixed(4)}`);
-  rows.push(`Fracture Frequency (joints/m),${(stats.totalJoints / Math.sqrt(stats.imageAreaM2)).toFixed(2)}`);
-  rows.push('');
-
-  rows.push('Individual Joint Data');
-  rows.push('Joint #,Length (m),Length (pixels),Orientation (°),Start X,Start Y,End X,End Y');
-
-  projectData.joints.forEach((joint, index) => {
-    rows.push(
-      `${index + 1},${joint.lengthMeters.toFixed(3)},${joint.lengthPixels.toFixed(1)},${
-        joint.orientation?.toFixed(1) || 'N/A'
-      },${joint.start.x.toFixed(0)},${joint.start.y.toFixed(0)},${joint.end.x.toFixed(0)},${joint.end.y.toFixed(0)}`
+    
+    // Footer
+    doc.setFontSize(8);
+    doc.setTextColor(100, 100, 100);
+    doc.text('Generated by Rock Joint Analyzer v1.5', margin, pageHeight - 30);
+    doc.text('Note: Orientations shown are apparent orientations in the photograph plane.', margin, pageHeight - 20);
+    
+    // Save the PDF
+    const filename = generateFilename(
+      (projectData.siteName || 'rock_joint_report').replace(/[^a-zA-Z0-9]/g, '_'),
+      'pdf'
     );
-  });
+    
+    // Get PDF as base64
+    const pdfBase64 = doc.output('datauristring').split(',')[1];
+    
+    // Save to filesystem
+    const result = await Filesystem.writeFile({
+      path: filename,
+      data: pdfBase64,
+      directory: Directory.Documents,
+    });
 
-  const csvContent = rows.join('\n');
-  const fileName = `joint-analysis-${new Date().toISOString().split('T')[0]}.csv`;
-  
-  await saveAndShareTextFile(fileName, csvContent, 'text/csv');
-};
+    console.log('PDF saved:', result.uri);
 
-export const exportToImage = async (canvas: HTMLCanvasElement | null): Promise<void> => {
-  if (!canvas) {
-    throw new Error('Canvas not available');
+    // Share the file
+    await Share.share({
+      title: 'Rock Joint Analysis Report',
+      text: `PDF Report - ${projectData.siteName || 'Analysis'}`,
+      url: result.uri,
+      dialogTitle: 'Share PDF Report'
+    });
+
+  } catch (error) {
+    console.error('PDF export error:', error);
+    throw error;
   }
-
-  const fileName = `joint-analysis-${new Date().toISOString().split('T')[0]}.png`;
-  const imageData = canvas.toDataURL('image/png').split(',')[1];
-  
-  await saveAndShareFile(fileName, imageData, 'image/png');
 };

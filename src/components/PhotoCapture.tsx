@@ -327,13 +327,13 @@ const PhotoCapture: React.FC<PhotoCaptureProps> = ({ onPhotoCaptured }) => {
                   <span className="gps-label">Longitude:</span>
                   <span className="gps-value">{formatCoordinate(gpsCoordinates.longitude, false)}</span>
                 </div>
-                {gpsCoordinates.altitude !== null && (
+                {gpsCoordinates.altitude != null && (
                   <div className="gps-coord">
                     <span className="gps-label">Elevation:</span>
                     <span className="gps-value">{gpsCoordinates.altitude.toFixed(1)} m</span>
                   </div>
                 )}
-                {gpsCoordinates.accuracy !== null && (
+                {gpsCoordinates.accuracy != null && (
                   <div className="gps-coord">
                     <span className="gps-label">Accuracy:</span>
                     <span className="gps-value">±{gpsCoordinates.accuracy.toFixed(0)} m</span>
