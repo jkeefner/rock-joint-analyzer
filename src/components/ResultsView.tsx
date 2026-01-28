@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { ProjectData, FractureStats } from '../types';
+import { ProjectData, FractureStats, Joint, ScaleData } from '../types';
 import { calculateFractureStats, exportToPDF, exportToCSV, exportToImage } from '../utils/exportUtils';
 import './ResultsView.css';
 
@@ -9,12 +9,139 @@ interface ResultsViewProps {
   onBack: () => void;
 }
 
-const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBack }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [stats, setStats] = useState<FractureStats | null>(null);
-  const [isExporting, setIsExporting] = useState<string | null>(null);
-  const [imageLoaded, setImageLoaded] = useState(false);
+interface JointSet {
+  id: number;
+  meanOrientation: number;
+  count: number;
+  joints: Joint[];
+  totalLength: number;
+  meanLength: number;
+  color: string;
+}
 
+// Colors for joint sets - distinctive palette for clustering
+const SET_COLORS = [
+  '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+  '#1abc9c', '#e67e22', '#34495e', '#16a085', '#c0392b',
+  '#2980b9', '#27ae60'
+];
+
+// Unit conversion constants
+const METERS_TO_FEET = 3.28084;
+const SQ_METERS_TO_SQ_FEET = 10.7639;
+
+/**
+ * Cluster joints by orientation using 15-degree bins
+ * Returns top N sets sorted by count
+ */
+const clusterJointsByOrientation = (joints: Joint[], maxSets: number = 12): JointSet[] => {
+  if (joints.length === 0) return [];
+
+  // Normalize orientation to 0-180 range (bidirectional, so 0° = 180°)
+  const normalizeOrientation = (angle: number): number => {
+    let normalized = angle % 360;
+    if (normalized < 0) normalized += 360;
+    if (normalized >= 180) normalized -= 180;
+    return normalized;
+  };
+
+  // Map joints to their normalized orientations
+  const orientations = joints.map(j => ({
+    joint: j,
+    orientation: normalizeOrientation(j.orientation || 0)
+  }));
+
+  // Create 15-degree bins
+  const binSize = 15;
+  const bins: Map<number, { joints: Joint[], orientations: number[] }> = new Map();
+
+  orientations.forEach(({ joint, orientation }) => {
+    const binIndex = Math.floor(orientation / binSize) * binSize;
+    if (!bins.has(binIndex)) {
+      bins.set(binIndex, { joints: [], orientations: [] });
+    }
+    bins.get(binIndex)!.joints.push(joint);
+    bins.get(binIndex)!.orientations.push(orientation);
+  });
+
+  // Convert bins to JointSet array
+  let sets: JointSet[] = [];
+  let setId = 1;
+
+  bins.forEach((bin, binIndex) => {
+    if (bin.joints.length > 0) {
+      const meanOrientation = bin.orientations.reduce((a, b) => a + b, 0) / bin.orientations.length;
+      const totalLength = bin.joints.reduce((sum, j) => sum + (j.lengthMeters || 0), 0);
+      
+      sets.push({
+        id: setId++,
+        meanOrientation: Math.round(meanOrientation),
+        count: bin.joints.length,
+        joints: bin.joints,
+        totalLength,
+        meanLength: bin.joints.length > 0 ? totalLength / bin.joints.length : 0,
+        color: SET_COLORS[(setId - 2) % SET_COLORS.length]
+      });
+    }
+  });
+
+  // Sort by count (most joints first) and take top N
+  sets.sort((a, b) => b.count - a.count);
+  sets = sets.slice(0, maxSets);
+  
+  // Re-assign colors and IDs after sorting
+  sets.forEach((set, index) => {
+    set.id = index + 1;
+    set.color = SET_COLORS[index % SET_COLORS.length];
+  });
+
+  return sets;
+};
+
+/**
+ * Create mapping from joint ID to cluster color
+ */
+const createJointColorMap = (jointSets: JointSet[]): Map<string, string> => {
+  const colorMap = new Map<string, string>();
+  jointSets.forEach(set => {
+    set.joints.forEach(joint => {
+      colorMap.set(joint.id, set.color);
+    });
+  });
+  return colorMap;
+};
+
+const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBack }) => {
+  // Refs
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  
+  // State
+  const [stats, setStats] = useState<FractureStats | null>(null);
+  const [jointSets, setJointSets] = useState<JointSet[]>([]);
+  const [jointColorMap, setJointColorMap] = useState<Map<string, string>>(new Map());
+  const [imageLoaded, setImageLoaded] = useState<boolean>(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState<string | null>(null);
+  const [useImperial, setUseImperial] = useState<boolean>(true);
+  const [jointDataExpanded, setJointDataExpanded] = useState<boolean>(false);
+
+  // Unit formatting functions
+  const formatLength = (m: number): string => 
+    useImperial ? `${(m * METERS_TO_FEET).toFixed(3)} ft` : `${m.toFixed(3)} m`;
+  
+  const formatArea = (m2: number): string => 
+    useImperial ? `${(m2 * SQ_METERS_TO_SQ_FEET).toFixed(2)} ft²` : `${m2.toFixed(2)} m²`;
+  
+  const formatDensity = (d: number): string => 
+    useImperial ? `${(d / METERS_TO_FEET * SQ_METERS_TO_SQ_FEET).toFixed(4)} ft/ft²` : `${d.toFixed(4)} m/m²`;
+  
+  const formatFrequency = (f: number): string => 
+    useImperial ? `${(f / METERS_TO_FEET).toFixed(2)} joints/ft` : `${f.toFixed(2)} joints/m`;
+  
+  const getLengthUnit = (): string => useImperial ? 'ft' : 'm';
+
+  // Calculate stats and clusters when project data changes
   useEffect(() => {
     if (projectData.scale) {
       const calculatedStats = calculateFractureStats(
@@ -24,40 +151,89 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
         projectData.photoHeight
       );
       setStats(calculatedStats);
+      
+      const clusters = clusterJointsByOrientation(projectData.joints, 12);
+      setJointSets(clusters);
+      setJointColorMap(createJointColorMap(clusters));
     }
   }, [projectData]);
 
+  // Load image when photo changes
   useEffect(() => {
-    loadAndDrawImage();
-  }, [projectData.photo, projectData.joints]);
+    loadImage();
+  }, [projectData.photo]);
 
-  const loadAndDrawImage = () => {
-    const canvas = canvasRef.current;
-    if (!canvas || !projectData.photo) return;
+  // Draw canvas when image loads and color map is ready
+  useEffect(() => {
+    if (imageLoaded && jointColorMap.size >= 0) {
+      drawCanvas();
+    }
+  }, [imageLoaded, jointColorMap, useImperial]);
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
+  /**
+   * Load the photo into an Image element stored in ref
+   */
+  const loadImage = () => {
+    setImageLoaded(false);
+    setImageError(null);
+    
+    console.log('ResultsView: Starting image load...');
+    console.log('ResultsView: Photo data length:', projectData.photo?.length || 0);
+    console.log('ResultsView: Photo starts with:', projectData.photo?.substring(0, 50));
+    
     const img = new Image();
+    
     img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      drawAnnotations(ctx, img.width, img.height);
+      console.log('ResultsView: Image loaded successfully', img.width, 'x', img.height);
+      imageRef.current = img;
       setImageLoaded(true);
     };
-    img.onerror = () => {
-      console.error('Failed to load image');
+    
+    img.onerror = (e) => {
+      console.error('ResultsView: Image failed to load:', e);
+      setImageError('Failed to load image. Please try again.');
+      setImageLoaded(false);
     };
+    
+    // Set source - this triggers the load
     img.src = projectData.photo;
   };
 
-  const drawAnnotations = (ctx: CanvasRenderingContext2D, imgWidth: number, imgHeight: number) => {
-    // Draw joints
+  /**
+   * Draw the annotated image on canvas with joints colored by cluster
+   */
+  const drawCanvas = () => {
+    const canvas = canvasRef.current;
+    const img = imageRef.current;
+    
+    if (!canvas || !img) {
+      console.log('ResultsView: Cannot draw - canvas or image missing');
+      return;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.log('ResultsView: Cannot get 2d context');
+      return;
+    }
+
+    console.log('ResultsView: Drawing canvas', img.width, 'x', img.height);
+
+    // Set canvas size to match image
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    // Draw the base image
+    ctx.drawImage(img, 0, 0);
+
+    // Draw joints with cluster colors
     projectData.joints.forEach((joint, index) => {
-      ctx.shadowColor = '#00ff00';
+      const color = jointColorMap.get(joint.id) || '#00ff00';
+      
+      // Joint line with glow effect
+      ctx.shadowColor = color;
       ctx.shadowBlur = 5;
-      ctx.strokeStyle = '#00ff00';
+      ctx.strokeStyle = color;
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(joint.start.x, joint.start.y);
@@ -65,42 +241,48 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      ctx.fillStyle = '#00ff00';
+      // Endpoint circles
+      ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(joint.start.x, joint.start.y, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.beginPath();
       ctx.arc(joint.end.x, joint.end.y, 5, 0, 2 * Math.PI);
       ctx.fill();
 
+      // Joint number label at midpoint
       const midX = (joint.start.x + joint.end.x) / 2;
       const midY = (joint.start.y + joint.end.y) / 2;
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
       ctx.fillRect(midX - 18, midY - 14, 36, 28);
-
-      ctx.fillStyle = '#00ff00';
+      ctx.fillStyle = color;
       ctx.font = 'bold 16px Arial';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(`${index + 1}`, midX, midY);
     });
 
-    // Draw scale bar
+    // Draw scale bar if scale is set
     if (projectData.scale) {
       const scaleY = 50;
-      const scaleLength = Math.min(projectData.scale.pixelsPerMeter, imgWidth * 0.3);
-      const scaleX = imgWidth - scaleLength - 50;
+      const scaleLength = Math.min(projectData.scale.pixelsPerMeter, img.width * 0.3);
+      const scaleX = img.width - scaleLength - 50;
       const scaleMeters = scaleLength / projectData.scale.pixelsPerMeter;
-
+      
+      // Scale bar background
       ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
       ctx.fillRect(scaleX - 20, scaleY - 50, scaleLength + 40, 80);
-
+      
+      // Scale bar line
       ctx.strokeStyle = '#ff4444';
       ctx.lineWidth = 6;
       ctx.beginPath();
       ctx.moveTo(scaleX, scaleY);
       ctx.lineTo(scaleX + scaleLength, scaleY);
       ctx.stroke();
-
+      
+      // End caps
       ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(scaleX, scaleY - 15);
@@ -108,238 +290,355 @@ const ResultsView: React.FC<ResultsViewProps> = ({ projectData, onStartNew, onBa
       ctx.moveTo(scaleX + scaleLength, scaleY - 15);
       ctx.lineTo(scaleX + scaleLength, scaleY + 15);
       ctx.stroke();
-
+      
+      // Scale text
       ctx.fillStyle = 'white';
       ctx.font = 'bold 18px Arial';
       ctx.textAlign = 'center';
-      ctx.fillText(`${scaleMeters.toFixed(1)} m`, scaleX + scaleLength / 2, scaleY - 25);
+      const scaleText = useImperial 
+        ? `${(scaleMeters * METERS_TO_FEET).toFixed(2)} ft`
+        : `${scaleMeters.toFixed(2)} m`;
+      ctx.fillText(scaleText, scaleX + scaleLength / 2, scaleY - 25);
     }
 
-    // Add watermark
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.font = '14px Arial';
-    ctx.textAlign = 'left';
-    ctx.fillText('Rock Joint Analyzer - Keefner Mining & Geotech LLC', 10, imgHeight - 10);
+    console.log('ResultsView: Canvas draw complete');
   };
 
-  const formatCoordinate = (value: number, isLatitude: boolean): string => {
-    const absolute = Math.abs(value);
-    const degrees = Math.floor(absolute);
-    const minutesDecimal = (absolute - degrees) * 60;
-    const minutes = Math.floor(minutesDecimal);
-    const seconds = ((minutesDecimal - minutes) * 60).toFixed(1);
-    const direction = isLatitude 
-      ? (value >= 0 ? 'N' : 'S')
-      : (value >= 0 ? 'E' : 'W');
-    return `${degrees}° ${minutes}' ${seconds}" ${direction}`;
+  /**
+   * Retry loading the image
+   */
+  const handleRetryImage = () => {
+    loadImage();
   };
 
+  /**
+   * Export handlers
+   */
   const handleExportPDF = async () => {
     if (!stats) return;
     setIsExporting('pdf');
     try {
-      await exportToPDF(projectData, stats, canvasRef.current);
+      const canvas = canvasRef.current;
+      await exportToPDF(projectData, stats, jointSets, canvas, useImperial);
     } catch (error) {
-      console.error('Error exporting PDF:', error);
+      console.error('PDF export failed:', error);
       alert('Failed to export PDF. Please try again.');
-    } finally {
-      setIsExporting(null);
     }
+    setIsExporting(null);
   };
 
   const handleExportCSV = async () => {
     if (!stats) return;
     setIsExporting('csv');
     try {
-      await exportToCSV(projectData, stats);
+      await exportToCSV(projectData, stats, jointSets, useImperial);
     } catch (error) {
-      console.error('Error exporting CSV:', error);
+      console.error('CSV export failed:', error);
       alert('Failed to export CSV. Please try again.');
-    } finally {
-      setIsExporting(null);
     }
+    setIsExporting(null);
   };
 
   const handleExportImage = async () => {
     setIsExporting('image');
     try {
-      await exportToImage(canvasRef.current);
+      const canvas = canvasRef.current;
+      if (canvas) {
+        await exportToImage(canvas, projectData.siteName || 'analysis');
+      }
     } catch (error) {
-      console.error('Error exporting image:', error);
+      console.error('Image export failed:', error);
       alert('Failed to export image. Please try again.');
-    } finally {
-      setIsExporting(null);
     }
+    setIsExporting(null);
   };
-
-  if (!stats) {
-    return (
-      <div className="results-loading">
-        <div className="spinner"></div>
-        <p>Calculating statistics...</p>
-      </div>
-    );
-  }
 
   return (
     <div className="results-view">
+      {/* Header with navigation */}
       <div className="results-header">
-        <h2>📊 Analysis Results</h2>
-        <p className="timestamp">Analysis completed: {new Date(projectData.timestamp).toLocaleString()}</p>
+        <button className="back-button" onClick={onBack}>
+          ← Back to Detection
+        </button>
+        <h2>Analysis Results</h2>
+        <div className="header-spacer"></div>
       </div>
 
-      <div className="results-content">
-        <div className="results-image-section">
-          <h3>Annotated Image</h3>
-          <div className="canvas-container">
-            <canvas ref={canvasRef} />
-            {!imageLoaded && (
-              <div className="image-loading">Loading image...</div>
-            )}
-          </div>
+      {/* Units Toggle */}
+      <div className="units-toggle">
+        <label className="toggle-label">
+          <span className={!useImperial ? 'active' : ''}>Metric</span>
+          <input
+            type="checkbox"
+            checked={useImperial}
+            onChange={(e) => setUseImperial(e.target.checked)}
+          />
+          <span className="toggle-slider"></span>
+          <span className={useImperial ? 'active' : ''}>Imperial</span>
+        </label>
+      </div>
+
+      {/* Site Info */}
+      {projectData.siteName && (
+        <div className="site-info">
+          <h3>{projectData.siteName}</h3>
+          {projectData.timestamp && (
+            <p className="timestamp">{new Date(projectData.timestamp).toLocaleString()}</p>
+          )}
         </div>
+      )}
 
-        <div className="results-stats-section">
+      {/* Annotated Image Canvas */}
+      <div className="annotated-image-section">
+        <h3>Annotated Image</h3>
+        <div className="canvas-container">
+          {!imageLoaded && !imageError && (
+            <div className="loading-overlay">
+              <div className="spinner"></div>
+              <p>Loading image...</p>
+            </div>
+          )}
+          {imageError && (
+            <div className="error-overlay">
+              <p className="error-message">{imageError}</p>
+              <button onClick={handleRetryImage} className="retry-button">
+                Retry Loading
+              </button>
+            </div>
+          )}
+          <canvas 
+            ref={canvasRef} 
+            className={`result-canvas ${imageLoaded ? 'visible' : 'hidden'}`}
+          />
+        </div>
+      </div>
+
+      {/* Statistics Summary */}
+      {stats && (
+        <div className="stats-section">
           <h3>Fracture Statistics</h3>
-
           <div className="stats-grid">
             <div className="stat-card">
-              <div className="stat-label">Total Joints</div>
-              <div className="stat-value">{stats.totalJoints}</div>
+              <span className="stat-value">{projectData.joints.length}</span>
+              <span className="stat-label">Total Joints</span>
             </div>
-
             <div className="stat-card">
-              <div className="stat-label">Mean Trace Length</div>
-              <div className="stat-value">{stats.meanTraceLength.toFixed(2)} m</div>
+              <span className="stat-value">{formatLength(stats.totalLength)}</span>
+              <span className="stat-label">Total Length</span>
             </div>
-
             <div className="stat-card">
-              <div className="stat-label">Min Trace Length</div>
-              <div className="stat-value">{stats.minTraceLength.toFixed(2)} m</div>
+              <span className="stat-value">{formatLength(stats.meanLength)}</span>
+              <span className="stat-label">Mean Length</span>
             </div>
-
             <div className="stat-card">
-              <div className="stat-label">Max Trace Length</div>
-              <div className="stat-value">{stats.maxTraceLength.toFixed(2)} m</div>
+              <span className="stat-value">{formatArea(stats.areaAnalyzed)}</span>
+              <span className="stat-label">Area Analyzed</span>
             </div>
-
-            <div className="stat-card">
-              <div className="stat-label">Total Trace Length</div>
-              <div className="stat-value">{stats.totalTraceLengthMeters.toFixed(2)} m</div>
-            </div>
-
             <div className="stat-card highlight">
-              <div className="stat-label">Fracture Density (P21)</div>
-              <div className="stat-value">{stats.fractureDensityP21.toFixed(3)} m/m²</div>
-              <div className="stat-note">Total trace length per unit area</div>
+              <span className="stat-value">{formatDensity(stats.p21)}</span>
+              <span className="stat-label">P21 Density</span>
             </div>
-
             <div className="stat-card">
-              <div className="stat-label">Image Area</div>
-              <div className="stat-value">{stats.imageAreaM2.toFixed(2)} m²</div>
-            </div>
-
-            <div className="stat-card">
-              <div className="stat-label">Fracture Frequency</div>
-              <div className="stat-value">
-                {(stats.totalJoints / Math.sqrt(stats.imageAreaM2)).toFixed(2)} joints/m
-              </div>
-              <div className="stat-note">Approximate linear frequency</div>
-            </div>
-          </div>
-
-          <div className="info-section">
-            <div className="orientation-info">
-              <h4>📐 Face Orientation</h4>
-              <div className="info-grid">
-                <div><strong>Azimuth:</strong> {projectData.faceOrientation.azimuth}°</div>
-                <div><strong>Dip:</strong> {projectData.faceOrientation.dip}°</div>
-              </div>
-            </div>
-
-            {projectData.gpsCoordinates && (
-              <div className="gps-info">
-                <h4>📍 GPS Location</h4>
-                <div className="info-grid">
-                  <div><strong>Lat:</strong> {formatCoordinate(projectData.gpsCoordinates.latitude, true)}</div>
-                  <div><strong>Lon:</strong> {formatCoordinate(projectData.gpsCoordinates.longitude, false)}</div>
-                  {projectData.gpsCoordinates.altitude !== null && (
-                    <div><strong>Elev:</strong> {projectData.gpsCoordinates.altitude.toFixed(1)} m</div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="scale-info">
-              <h4>📏 Scale Information</h4>
-              {projectData.scale && (
-                <div className="info-grid">
-                  <div><strong>Scale:</strong> {projectData.scale.pixelsPerMeter.toFixed(2)} px/m</div>
-                  <div><strong>Calibration:</strong> {projectData.scale.realWorldDistance.toFixed(2)} m</div>
-                </div>
-              )}
+              <span className="stat-value">{formatFrequency(stats.frequency)}</span>
+              <span className="stat-label">Frequency</span>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="joint-table-section">
-        <h3>Individual Joint Data</h3>
-        <div className="table-container">
-          <table className="joint-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Length (m)</th>
-                <th>Orientation (°)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projectData.joints.map((joint, index) => (
-                <tr key={joint.id}>
-                  <td>{index + 1}</td>
-                  <td>{joint.lengthMeters.toFixed(3)}</td>
-                  <td>{joint.orientation?.toFixed(1) || 'N/A'}</td>
+      {/* Joint Set Orientation Analysis - ROSETTE DIAGRAM */}
+      {jointSets.length > 0 && (
+        <div className="joint-sets-section">
+          <h3>Joint Set Orientation Clustering</h3>
+          <p className="section-note">
+            Joints grouped into 15° orientation bins. Colors match annotated image.
+            These are apparent orientations in the photo plane - field verification recommended.
+          </p>
+          
+          <div className="joint-sets-layout">
+            {/* Rose Diagram */}
+            <div className="rose-diagram-container">
+              <svg viewBox="0 0 300 300" className="rose-diagram">
+                {/* Background circle */}
+                <circle cx="150" cy="150" r="140" fill="#f8f9fa" stroke="#ddd" strokeWidth="1" />
+                
+                {/* Concentric circles for scale */}
+                {[35, 70, 105, 140].map((r, i) => (
+                  <circle key={i} cx="150" cy="150" r={r} fill="none" stroke="#e0e0e0" strokeWidth="1" />
+                ))}
+                
+                {/* Cardinal direction lines */}
+                <line x1="150" y1="10" x2="150" y2="290" stroke="#ccc" strokeWidth="1" />
+                <line x1="10" y1="150" x2="290" y2="150" stroke="#ccc" strokeWidth="1" />
+                
+                {/* Direction labels */}
+                <text x="150" y="20" textAnchor="middle" fontSize="12" fill="#666">N (0°)</text>
+                <text x="280" y="154" textAnchor="middle" fontSize="12" fill="#666">E (90°)</text>
+                <text x="150" y="295" textAnchor="middle" fontSize="12" fill="#666">S (180°)</text>
+                <text x="20" y="154" textAnchor="middle" fontSize="12" fill="#666">W (270°)</text>
+                
+                {/* Rose petals for each joint set */}
+                {jointSets.map((set, index) => {
+                  // Convert orientation to radians (0° = North = up)
+                  const angleRad = (set.meanOrientation - 90) * (Math.PI / 180);
+                  const oppositeRad = angleRad + Math.PI;
+                  
+                  // Scale petal length by count
+                  const maxCount = Math.max(...jointSets.map(s => s.count));
+                  const petalLength = (set.count / maxCount) * 100 + 30;
+                  
+                  // Petal half-width in radians (7.5° = half of 15° bin)
+                  const halfWidth = 7.5 * (Math.PI / 180);
+                  
+                  const cx = 150, cy = 150;
+                  
+                  // Create bidirectional petal (both directions since joints are bidirectional)
+                  const points = [
+                    `${cx + Math.cos(angleRad - halfWidth) * 20},${cy + Math.sin(angleRad - halfWidth) * 20}`,
+                    `${cx + Math.cos(angleRad) * petalLength},${cy + Math.sin(angleRad) * petalLength}`,
+                    `${cx + Math.cos(angleRad + halfWidth) * 20},${cy + Math.sin(angleRad + halfWidth) * 20}`,
+                    `${cx + Math.cos(oppositeRad - halfWidth) * 20},${cy + Math.sin(oppositeRad - halfWidth) * 20}`,
+                    `${cx + Math.cos(oppositeRad) * petalLength},${cy + Math.sin(oppositeRad) * petalLength}`,
+                    `${cx + Math.cos(oppositeRad + halfWidth) * 20},${cy + Math.sin(oppositeRad + halfWidth) * 20}`,
+                  ].join(' ');
+                  
+                  return (
+                    <g key={index}>
+                      <polygon
+                        points={points}
+                        fill={set.color}
+                        fillOpacity="0.6"
+                        stroke={set.color}
+                        strokeWidth="2"
+                      />
+                    </g>
+                  );
+                })}
+                
+                {/* Center circle */}
+                <circle cx="150" cy="150" r="15" fill="white" stroke="#666" strokeWidth="1" />
+              </svg>
+            </div>
+
+            {/* Joint Sets Table */}
+            <div className="joint-sets-table-container">
+              <table className="joint-sets-table">
+                <thead>
+                  <tr>
+                    <th>Set</th>
+                    <th>Orientation</th>
+                    <th>Count</th>
+                    <th>%</th>
+                    <th>Mean Length</th>
+                    <th>Total Length</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jointSets.map((set) => (
+                    <tr key={set.id}>
+                      <td>
+                        <span 
+                          className="set-color-indicator" 
+                          style={{ backgroundColor: set.color }}
+                        ></span>
+                        {set.id}
+                      </td>
+                      <td>{set.meanOrientation}°</td>
+                      <td>{set.count}</td>
+                      <td>{((set.count / projectData.joints.length) * 100).toFixed(1)}%</td>
+                      <td>{formatLength(set.meanLength)}</td>
+                      <td>{formatLength(set.totalLength)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Individual Joint Data - Collapsible */}
+      <div className="joint-data-section">
+        <button 
+          type="button"
+          className="joint-data-header"
+          onClick={() => setJointDataExpanded(prev => !prev)}
+        >
+          <h3>Individual Joint Data ({projectData.joints.length})</h3>
+          <span className={`expand-arrow ${jointDataExpanded ? 'expanded' : ''}`}>
+            {jointDataExpanded ? '▼' : '▶'}
+          </span>
+        </button>
+        
+        {jointDataExpanded && (
+          <div className="joint-data-content">
+            <table className="joint-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Length</th>
+                  <th>Orientation</th>
+                  <th>Start (px)</th>
+                  <th>End (px)</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {projectData.joints.map((joint, index) => (
+                  <tr key={joint.id}>
+                    <td>
+                      <span 
+                        className="joint-color-dot"
+                        style={{ backgroundColor: jointColorMap.get(joint.id) || '#00ff00' }}
+                      ></span>
+                      {index + 1}
+                    </td>
+                    <td>{formatLength(joint.lengthMeters || 0)}</td>
+                    <td>{joint.orientation?.toFixed(1) || 0}°</td>
+                    <td>({Math.round(joint.start.x)}, {Math.round(joint.start.y)})</td>
+                    <td>({Math.round(joint.end.x)}, {Math.round(joint.end.y)})</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
+      {/* Export Buttons */}
       <div className="export-section">
-        <h3>Export Options</h3>
+        <h3>Export Results</h3>
         <div className="export-buttons">
           <button 
-            className="btn-export" 
+            className="export-button pdf"
             onClick={handleExportPDF}
-            disabled={isExporting !== null}
+            disabled={isExporting !== null || !stats}
           >
-            {isExporting === 'pdf' ? '⏳...' : '📄 PDF'}
+            {isExporting === 'pdf' ? 'Exporting...' : '📄 Export PDF Report'}
           </button>
           <button 
-            className="btn-export" 
+            className="export-button csv"
             onClick={handleExportCSV}
-            disabled={isExporting !== null}
+            disabled={isExporting !== null || !stats}
           >
-            {isExporting === 'csv' ? '⏳...' : '📊 CSV'}
+            {isExporting === 'csv' ? 'Exporting...' : '📊 Export CSV Data'}
           </button>
           <button 
-            className="btn-export" 
+            className="export-button image"
             onClick={handleExportImage}
-            disabled={isExporting !== null}
+            disabled={isExporting !== null || !imageLoaded}
           >
-            {isExporting === 'image' ? '⏳...' : '🖼️ Image'}
+            {isExporting === 'image' ? 'Exporting...' : '🖼️ Export Annotated Image'}
           </button>
         </div>
       </div>
 
-      <div className="button-group">
-        <button className="btn-secondary" onClick={onBack}>
-          ← Back
+      {/* Action Buttons */}
+      <div className="action-buttons">
+        <button className="secondary-button" onClick={onBack}>
+          ← Adjust Detection
         </button>
-        <button className="btn-primary" onClick={onStartNew}>
-          🔄 New Analysis
+        <button className="primary-button" onClick={onStartNew}>
+          Start New Analysis
         </button>
       </div>
     </div>
