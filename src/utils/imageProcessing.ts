@@ -22,7 +22,7 @@ interface LineSegment {
 const getLineAngle = (start: Point, end: Point): number => {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  let angle = Math.atan2(dx, -dy) * (180 / Math.PI);
   // Normalize to 0-180 range (lines are bidirectional)
   if (angle < 0) angle += 180;
   if (angle >= 180) angle -= 180;
@@ -176,10 +176,7 @@ export const detectJoints = async (
           // Convert to joints
           const joints: Joint[] = dedupedSegments.map((segment, i) => {
             const lengthMeters = segment.length / scale.pixelsPerMeter;
-            const orientation = Math.atan2(
-              segment.end.y - segment.start.y,
-              segment.end.x - segment.start.x
-            ) * (180 / Math.PI);
+            const orientation = Math.atan2(segment.end.x - segment.start.x, -(segment.end.y - segment.start.y)) * (180 / Math.PI);
 
             return {
               id: `joint_${i}`,
@@ -221,6 +218,7 @@ export const calculateDistance = (p1: Point, p2: Point): number => {
 export const calculateOrientation = (p1: Point, p2: Point): number => {
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
-  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  const angle = Math.atan2(dx, -dy) * (180 / Math.PI);
   return (angle + 360) % 360;
 };
+

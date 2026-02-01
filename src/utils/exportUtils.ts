@@ -381,8 +381,10 @@ export const exportToPDF = async (
         pdf.setFillColor(rgb.r, rgb.g, rgb.b);
         pdf.setDrawColor(rgb.r, rgb.g, rgb.b);
         
-        // Convert orientation to radians (0° = North = up)
-        const angleRad = (set.meanOrientation - 90) * (Math.PI / 180);
+        // Convert orientation to radians
+        // In PDF: Y increases downward, so we negate Y components
+        // 0° = North (up), 90° = East (right), 180° = South (down), 270° = West (left)
+        const angleRad = set.meanOrientation * (Math.PI / 180);
         const oppositeRad = angleRad + Math.PI;
         
         // Scale petal length by count
@@ -391,23 +393,27 @@ export const exportToPDF = async (
         // Draw bidirectional petal as two triangles
         const halfWidth = 7.5 * (Math.PI / 180); // 7.5 degrees half-width
         
+        // Helper to convert angle to PDF coordinates (0° = up/North)
+        const toX = (angle: number, radius: number) => rosetteCenterX + Math.sin(angle) * radius;
+        const toY = (angle: number, radius: number) => rosetteCenterY - Math.cos(angle) * radius;
+        
         // First petal (primary direction)
-        const p1x = rosetteCenterX + Math.cos(angleRad - halfWidth) * 5;
-        const p1y = rosetteCenterY + Math.sin(angleRad - halfWidth) * 5;
-        const p2x = rosetteCenterX + Math.cos(angleRad) * petalLength;
-        const p2y = rosetteCenterY + Math.sin(angleRad) * petalLength;
-        const p3x = rosetteCenterX + Math.cos(angleRad + halfWidth) * 5;
-        const p3y = rosetteCenterY + Math.sin(angleRad + halfWidth) * 5;
+        const p1x = toX(angleRad - halfWidth, 5);
+        const p1y = toY(angleRad - halfWidth, 5);
+        const p2x = toX(angleRad, petalLength);
+        const p2y = toY(angleRad, petalLength);
+        const p3x = toX(angleRad + halfWidth, 5);
+        const p3y = toY(angleRad + halfWidth, 5);
         
         pdf.triangle(p1x, p1y, p2x, p2y, p3x, p3y, 'F');
         
         // Opposite petal
-        const p4x = rosetteCenterX + Math.cos(oppositeRad - halfWidth) * 5;
-        const p4y = rosetteCenterY + Math.sin(oppositeRad - halfWidth) * 5;
-        const p5x = rosetteCenterX + Math.cos(oppositeRad) * petalLength;
-        const p5y = rosetteCenterY + Math.sin(oppositeRad) * petalLength;
-        const p6x = rosetteCenterX + Math.cos(oppositeRad + halfWidth) * 5;
-        const p6y = rosetteCenterY + Math.sin(oppositeRad + halfWidth) * 5;
+        const p4x = toX(oppositeRad - halfWidth, 5);
+        const p4y = toY(oppositeRad - halfWidth, 5);
+        const p5x = toX(oppositeRad, petalLength);
+        const p5y = toY(oppositeRad, petalLength);
+        const p6x = toX(oppositeRad + halfWidth, 5);
+        const p6y = toY(oppositeRad + halfWidth, 5);
         
         pdf.triangle(p4x, p4y, p5x, p5y, p6x, p6y, 'F');
       });
